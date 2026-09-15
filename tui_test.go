@@ -168,6 +168,67 @@ func TestLiveFollow(t *testing.T) {
 	}
 }
 
+func runes(s string) tea.KeyMsg { return tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune(s)} }
+
+func TestInChatSearchIndependent(t *testing.T) {
+	dir := filepath.Join(t.TempDir(), "projects", "-tmp-search")
+	os.MkdirAll(dir, 0755)
+	content := `{"type":"user","sessionId":"s1","cwd":"/tmp/s","gitBranch":"main","timestamp":"2026-09-15T10:00:00.000Z","message":{"role":"user","content":"alpha question please"}}` + "\n" +
+		`{"type":"assistant","sessionId":"s1","timestamp":"2026-09-15T10:00:01.000Z","message":{"role":"assistant","content":[{"type":"text","text":"beta answer with alpha again"}]}}` + "\n"
+	os.WriteFile(filepath.Join(dir, "s1.jsonl"), []byte(content), 0644)
+
+	ss, _ := session.Scan(filepath.Dir(dir))
+	m := newModel(ss)
+	m = drive(m, tea.WindowSizeMsg{Width: 80, Height: 24})
+
+	// global search for "alpha", then open the (only) matching session
+	m = drive(m, runes("alpha"))
+	if len(m.filtered) != 1 {
+		t.Fatalf("global search expected 1 session, got %d", len(m.filtered))
+	}
+	m = drive(m, tea.KeyMsg{Type: tea.KeyEnter})
+	if m.mode != modeDetail || m.detailQuery != "alpha" {
+		t.Fatalf("detail did not adopt global query: mode=%d q=%q", m.mode, m.detailQuery)
+	}
+	alphaMatches := len(m.matches)
+
+	// in-chat search: "/" then type "beta"
+	m = drive(m, runes("/"))
+	if !m.isearch {
+		t.Fatal("/ did not start in-chat search")
+	}
+	m = drive(m, runes("beta"))
+	if m.detailQuery != "beta" {
+		t.Fatalf("in-chat query not applied: %q", m.detailQuery)
+	}
+	if len(m.matches) == 0 || len(m.matches) >= alphaMatches {
+		t.Fatalf("beta should match fewer lines than alpha (alpha=%d beta=%d)", alphaMatches, len(m.matches))
+	}
+	// global search must be untouched
+	if m.input.Value() != "alpha" {
+		t.Fatalf("global search was modified by in-chat search: %q", m.input.Value())
+	}
+	m = drive(m, tea.KeyMsg{Type: tea.KeyEnter}) // commit
+	if m.isearch {
+		t.Fatal("enter did not close in-chat search")
+	}
+
+	// back to list: the global filter still applies
+	m = drive(m, tea.KeyMsg{Type: tea.KeyEsc})
+	if m.mode != modeList || len(m.filtered) != 1 {
+		t.Fatalf("global filter lost after leaving chat: mode=%d n=%d", m.mode, len(m.filtered))
+	}
+
+	// re-open: in-chat search cancel (esc) restores the adopted global query
+	m = drive(m, tea.KeyMsg{Type: tea.KeyEnter})
+	m = drive(m, runes("/"))
+	m = drive(m, runes("beta"))
+	m = drive(m, tea.KeyMsg{Type: tea.KeyEsc}) // cancel
+	if m.detailQuery != "alpha" {
+		t.Fatalf("esc did not restore adopted query, got %q", m.detailQuery)
+	}
+}
+
 func TestMarkdownRendering(t *testing.T) {
 	// table detection
 	block := markdownBlock("| A | B |\n|---|---|\n| 1 | 2 |")

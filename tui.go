@@ -92,15 +92,19 @@ type model struct {
 	activePane int // 0 = projects (left), 1 = sessions (right)
 
 	// detail state
-	dTitle     string
-	rawLines   []Line // tagged source lines (kept to re-wrap/re-filter cheaply)
-	dLines     []Line // wrapped display lines (after tech filter)
-	dTop       int
-	matches    []int // indices into dLines containing the query
-	matchPos   int
-	hideTech   bool // hide tool calls / results / thinking -> conversation only
-	returnMode mode // browse mode to return to when leaving detail
-	err        error
+	dTitle      string
+	rawLines    []Line // tagged source lines (kept to re-wrap/re-filter cheaply)
+	dLines      []Line // wrapped display lines (after tech filter)
+	dTop        int
+	matches     []int // indices into dLines containing the detail query
+	matchPos    int
+	hideTech    bool   // hide tool calls / results / thinking -> conversation only
+	returnMode  mode   // browse mode to return to when leaving detail
+	detailQuery string // in-chat search term (independent of the global search)
+	dinput      textinput.Model
+	isearch     bool   // in-chat search prompt is active
+	isearchPrev string // detailQuery to restore if the in-chat search is cancelled
+	err         error
 
 	// live-follow state (detail view tails the file as it grows; read-only)
 	curPath string
@@ -114,7 +118,10 @@ func newModel(sessions []session.Session) model {
 	ti.Placeholder = "search all transcripts…"
 	ti.Prompt = "🔍 "
 	ti.Focus()
-	m := model{all: sessions, input: ti, follow: true}
+	di := textinput.New()
+	di.Placeholder = "search in this chat…"
+	di.Prompt = "/"
+	m := model{all: sessions, input: ti, dinput: di, follow: true}
 	m.refilter()
 	return m
 }
@@ -303,6 +310,9 @@ func (m *model) moveProjects(d int) {
 }
 
 func (m model) updateDetail(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
+	if m.isearch {
+		return m.updateISearch(msg)
+	}
 	page := m.detailRows()
 	switch msg.String() {
 	case "ctrl+c":
@@ -310,6 +320,13 @@ func (m model) updateDetail(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	case "esc", "q", "backspace", "left", "h":
 		m.mode = m.returnMode
 		return m, nil
+	case "/":
+		m.isearchPrev = m.detailQuery
+		m.isearch = true
+		m.dinput.SetValue("")
+		m.detailQuery = ""
+		m.rebuildDetail()
+		return m, m.dinput.Focus()
 	case "up", "k":
 		m.dTop = max(0, m.dTop-1)
 	case "down", "j":
@@ -341,6 +358,39 @@ func (m model) updateDetail(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	return m, nil
 }
 
+// updateISearch handles keys while the in-chat search prompt is active. It edits
+// only detailQuery, never the global search, so the list filter is untouched.
+func (m model) updateISearch(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
+	switch msg.String() {
+	case "ctrl+c":
+		return m, tea.Quit
+	case "enter":
+		m.isearch = false
+		m.dinput.Blur()
+		if len(m.matches) > 0 {
+			m.matchPos = m.firstMatchFrom(m.dTop)
+			m.dTop = m.clampTop(m.matches[m.matchPos])
+		}
+		return m, nil
+	case "esc":
+		m.isearch = false
+		m.dinput.Blur()
+		m.detailQuery = m.isearchPrev // restore the query we had before "/"
+		m.rebuildDetail()
+		m.dTop = m.clampTop(m.dTop)
+		return m, nil
+	}
+	var cmd tea.Cmd
+	m.dinput, cmd = m.dinput.Update(msg)
+	m.detailQuery = strings.ToLower(strings.TrimSpace(m.dinput.Value()))
+	m.rebuildDetail()
+	if len(m.matches) > 0 { // live jump to the first hit for feedback while typing
+		m.matchPos = m.firstMatchFrom(m.dTop)
+		m.dTop = m.clampTop(m.matches[m.matchPos])
+	}
+	return m, cmd
+}
+
 func (m *model) openDetail(s session.Session) {
 	entries, err := session.ReadEntries(s.Path)
 	m.err = err
@@ -349,6 +399,8 @@ func (m *model) openDetail(s session.Session) {
 	m.rawLines = renderEntries(entries)
 	m.returnMode = m.mode
 	m.mode = modeDetail
+	m.detailQuery = m.query() // adopt the global search on entry
+	m.isearch = false
 	m.dTop, m.matchPos = 0, 0
 	m.rebuildDetail()
 	if len(m.matches) > 0 {
@@ -384,13 +436,24 @@ func (m *model) rebuildDetail() {
 	m.dLines = out
 
 	m.matches = m.matches[:0]
-	if q := m.query(); q != "" {
+	if q := m.detailQuery; q != "" {
 		for i, l := range m.dLines {
 			if strings.Contains(strings.ToLower(l.Text), q) {
 				m.matches = append(m.matches, i)
 			}
 		}
 	}
+}
+
+// firstMatchFrom returns the index (into m.matches) of the first match at or
+// after display line `top`, wrapping to the first match if none is below.
+func (m *model) firstMatchFrom(top int) int {
+	for i, ln := range m.matches {
+		if ln >= top {
+			return i
+		}
+	}
+	return 0
 }
 
 // --- live follow (read-only file tailing) ----------------------------------
@@ -606,7 +669,7 @@ func (m model) viewDetail() string {
 	b.WriteString(stDim.Render(strings.Repeat("─", m.w)) + "\n")
 
 	rows := m.detailRows()
-	q := m.query()
+	q := m.detailQuery
 	end := min(m.dTop+rows, len(m.dLines))
 	for i := m.dTop; i < end; i++ {
 		b.WriteString(renderKindLine(m.dLines[i], q) + "\n")
@@ -615,7 +678,11 @@ func (m model) viewDetail() string {
 		b.WriteString("\n")
 	}
 	b.WriteString(stDim.Render(strings.Repeat("─", m.w)) + "\n")
-	b.WriteString(stDim.Render("↑↓/jk scroll · space page · n/N match · t tech · f follow · r reload · esc back"))
+	if m.isearch {
+		b.WriteString(m.dinput.View())
+	} else {
+		b.WriteString(stDim.Render("↑↓/jk scroll · / search · n/N match · t tech · f follow · r reload · esc back"))
+	}
 	return b.String()
 }
 

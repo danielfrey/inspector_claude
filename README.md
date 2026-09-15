@@ -54,16 +54,25 @@ chat from either:
 | Projects | `esc`           | clear search / quit |
 | Detail  | `↑`/`↓`, `j`/`k` | scroll |
 | Detail  | `space`, `pgup`/`pgdn` | page |
-| Detail  | `n` / `N`       | next / previous match (of the active search) |
+| Detail  | `/`             | search within this chat (own term; `enter` keep, `esc` cancel) |
+| Detail  | `n` / `N`       | next / previous match |
 | Detail  | `t`             | toggle technical lines (tool calls/results/thinking) |
 | Detail  | `f`             | toggle live-follow (auto-reload as the file grows) |
 | Detail  | `r`             | reload now (Cmd-R is captured by the terminal/OS) |
 | Detail  | `g` / `G`       | top / bottom |
 | Detail  | `esc` / `q`     | back to list |
 
-The active search term is highlighted inside the detail view, and `n`/`N` jump
-between its occurrences. `t` switches between the full transcript and a
-conversation-only view that hides tool calls, tool results and thinking.
+### Two independent searches
+
+The **global** search (the box in the list/projects views) filters which
+sessions are shown. When you open a chat it **adopts** that term — the matches
+are already highlighted and `n`/`N` walk them. Inside the chat, `/` starts a
+**local** search that overrides the highlight for that chat only (`enter` keeps
+it, `esc` restores the adopted term). Leaving the chat, the global search is
+untouched, so the list filter is exactly as you left it.
+
+`t` switches between the full transcript and a conversation-only view that hides
+tool calls, tool results and thinking.
 
 ### Markdown & live view
 
