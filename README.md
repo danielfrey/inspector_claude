@@ -56,12 +56,26 @@ chat from either:
 | Detail  | `space`, `pgup`/`pgdn` | page |
 | Detail  | `n` / `N`       | next / previous match (of the active search) |
 | Detail  | `t`             | toggle technical lines (tool calls/results/thinking) |
+| Detail  | `f`             | toggle live-follow (auto-reload as the file grows) |
+| Detail  | `r`             | reload now (Cmd-R is captured by the terminal/OS) |
 | Detail  | `g` / `G`       | top / bottom |
 | Detail  | `esc` / `q`     | back to list |
 
 The active search term is highlighted inside the detail view, and `n`/`N` jump
 between its occurrences. `t` switches between the full transcript and a
 conversation-only view that hides tool calls, tool results and thinking.
+
+### Markdown & live view
+
+The chat renders inline markdown — **bold**, `inline code`, *italics*,
+headings, bullet/numbered lists, blockquotes, fenced code blocks and aligned
+tables — while keeping search matches highlighted on top.
+
+A `● live` indicator shows that the open session is being followed: because
+transcripts only ever grow, the app polls the file once a second (read-only)
+and, if you are scrolled to the bottom, tails new turns as they are written —
+so you can watch a session happening in another Claude Code window in real time.
+Press `f` to pause/resume following, `r` to reload immediately.
 
 ## How it works
 

@@ -1,6 +1,8 @@
 package main
 
 import (
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 	"time"
@@ -94,13 +96,13 @@ func TestProjectsViewNavigation(t *testing.T) {
 
 func TestConversationFilter(t *testing.T) {
 	lines := []Line{
-		{"▶ YOU", false},
-		{"hello", false},
-		{"  ⚙ Bash  echo hi", true},
-		{"  ⎿ result:", true},
-		{"    hi", true},
-		{"● CLAUDE", false},
-		{"world", false},
+		{"▶ YOU", kHeaderYou},
+		{"hello", kText},
+		{"  ⚙ Bash  echo hi", kTool},
+		{"  ⎿ result:", kTool},
+		{"    hi", kTool},
+		{"● CLAUDE", kHeaderClaude},
+		{"world", kText},
 	}
 	full := lineTexts(lines, false)
 	conv := lineTexts(lines, true)
@@ -114,5 +116,93 @@ func TestConversationFilter(t *testing.T) {
 		if strings.HasPrefix(l, "  ⚙") || strings.HasPrefix(l, "  ⎿") {
 			t.Fatalf("technical line leaked into conversation view: %q", l)
 		}
+	}
+}
+
+func TestLiveFollow(t *testing.T) {
+	dir := filepath.Join(t.TempDir(), "projects", "-tmp-live")
+	if err := os.MkdirAll(dir, 0755); err != nil {
+		t.Fatal(err)
+	}
+	path := filepath.Join(dir, "live.jsonl")
+	head := `{"type":"user","sessionId":"live1","cwd":"/tmp/live","gitBranch":"main","timestamp":"2026-09-15T10:00:00.000Z","message":{"role":"user","content":"hi"}}` + "\n"
+	if err := os.WriteFile(path, []byte(head), 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	ss, _ := session.Scan(filepath.Dir(dir))
+	if len(ss) != 1 {
+		t.Fatalf("expected 1 session, got %d", len(ss))
+	}
+	m := newModel(ss)
+	m = drive(m, tea.WindowSizeMsg{Width: 80, Height: 24})
+	m = drive(m, tea.KeyMsg{Type: tea.KeyEnter})
+	if m.mode != modeDetail {
+		t.Fatal("did not open detail")
+	}
+	if m.fileChanged() {
+		t.Fatal("file reported changed immediately after open")
+	}
+	before := len(m.dLines)
+
+	// a new turn is appended by some other Claude Code window
+	f, _ := os.OpenFile(path, os.O_APPEND|os.O_WRONLY, 0644)
+	f.WriteString(`{"type":"assistant","sessionId":"live1","timestamp":"2026-09-15T10:00:05.000Z","message":{"role":"assistant","content":[{"type":"text","text":"a brand new answer line"}]}}` + "\n")
+	f.Close()
+
+	if !m.fileChanged() {
+		t.Fatal("fileChanged did not detect the append")
+	}
+	m = drive(m, tickMsg(time.Now()))
+	if len(m.dLines) <= before {
+		t.Fatalf("follow did not grow the view: before=%d after=%d", before, len(m.dLines))
+	}
+	found := false
+	for _, l := range m.dLines {
+		if strings.Contains(l.Text, "brand new answer") {
+			found = true
+		}
+	}
+	if !found {
+		t.Fatal("appended turn not visible after follow reload")
+	}
+}
+
+func TestMarkdownRendering(t *testing.T) {
+	// table detection
+	block := markdownBlock("| A | B |\n|---|---|\n| 1 | 2 |")
+	var kinds []lineKind
+	for _, l := range block {
+		kinds = append(kinds, l.Kind)
+	}
+	if len(kinds) != 3 || kinds[0] != kTableHead || kinds[1] != kTableSep || kinds[2] != kTableRow {
+		t.Fatalf("table not recognized: %+v", block)
+	}
+
+	// fenced code
+	code := markdownBlock("text\n```go\nx := 1\n```\nmore")
+	var codeLines int
+	for _, l := range code {
+		if l.Kind == kCode {
+			codeLines++
+			if strings.Contains(l.Text, "```") {
+				t.Fatalf("fence marker leaked into code line: %q", l.Text)
+			}
+		}
+	}
+	if codeLines != 1 {
+		t.Fatalf("expected 1 code line, got %d", codeLines)
+	}
+
+	// inline bold + code produce styled spans and search overlay splits them
+	spans := overlay(inlineSpans("use **bold** and `tab` now"), "tab")
+	var hasMatch bool
+	for _, sp := range spans {
+		if sp.text == "tab" {
+			hasMatch = true
+		}
+	}
+	if !hasMatch {
+		t.Fatalf("search term not isolated into its own span: %+v", spans)
 	}
 }

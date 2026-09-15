@@ -4,33 +4,40 @@ import (
 	"encoding/json"
 	"fmt"
 	"strings"
+	"unicode/utf8"
 
 	"inspector_claude/internal/session"
 )
 
-// Line is one rendered display line, tagged by whether it belongs to the plain
-// user<->assistant conversation (Tech=false) or to the machinery around it —
-// tool calls, tool results, and Claude's thinking (Tech=true). The flag lets
-// the viewer hide the technical lines and show only the conversation.
+// lineKind classifies a rendered line so the viewer can style and filter it.
+type lineKind int
+
+const (
+	kText         lineKind = iota // plain conversation text (inline markdown at draw time)
+	kHeaderYou                    // "▶ YOU" role header
+	kHeaderClaude                 // "● CLAUDE" role header
+	kThinking                     // Claude's thinking (technical)
+	kTool                         // tool call / tool result (technical)
+	kCode                         // fenced code block content (verbatim)
+	kTableHead                    // markdown table header row
+	kTableRow                     // markdown table data row
+	kTableSep                     // markdown table separator row
+)
+
+func (k lineKind) tech() bool { return k == kThinking || k == kTool }
+
+// Line is one rendered display line plus its kind. The kind drives styling
+// (in the TUI) and the conversation-only filter (hide technical lines).
 type Line struct {
 	Text string
-	Tech bool
+	Kind lineKind
 }
 
-// renderEntries turns a session's entries into tagged display lines. The TUI
-// wraps, filters and highlights these; the plain-CLI `show` mode prints them.
+// renderEntries turns a session's entries into tagged display lines.
 func renderEntries(entries []session.Entry) []Line {
 	var lines []Line
-	conv := func(ss ...string) {
-		for _, s := range ss {
-			lines = append(lines, Line{s, false})
-		}
-	}
-	tech := func(ss ...string) {
-		for _, s := range ss {
-			lines = append(lines, Line{s, true})
-		}
-	}
+	add := func(ss []Line) { lines = append(lines, ss...) }
+	one := func(text string, k lineKind) { lines = append(lines, Line{text, k}) }
 
 	for _, e := range entries {
 		if e.Message == nil {
@@ -43,42 +50,173 @@ func renderEntries(entries []session.Entry) []Line {
 					continue
 				}
 				if e.Type == "user" {
-					conv("", "▶ YOU")
+					one("", kText)
+					one("▶ YOU", kHeaderYou)
 				} else {
-					conv("", "● CLAUDE")
+					one("", kText)
+					one("● CLAUDE", kHeaderClaude)
 				}
-				conv(splitLines(b.Text)...)
+				add(markdownBlock(b.Text))
 			case "thinking":
 				txt := b.PlainText()
 				if strings.TrimSpace(txt) == "" {
 					continue
 				}
-				tech("", "  · thinking")
-				tech(indent(splitLines(txt), "  ")...)
+				one("", kThinking)
+				one("  · thinking", kThinking)
+				for _, l := range indent(splitLines(txt), "  ") {
+					one(l, kThinking)
+				}
 			case "tool_use":
-				tech("", "  ⚙ "+b.Name+"  "+summarizeInput(b.Input))
+				one("", kTool)
+				one("  ⚙ "+b.Name+"  "+summarizeInput(b.Input), kTool)
 			case "tool_result":
 				txt := strings.TrimRight(b.PlainText(), "\n")
 				if strings.TrimSpace(txt) == "" {
 					continue
 				}
-				tech("  ⎿ result:")
-				tech(indent(splitLines(truncate(txt, 4000)), "    ")...)
+				one("  ⎿ result:", kTool)
+				for _, l := range indent(splitLines(truncate(txt, 4000)), "    ") {
+					one(l, kTool)
+				}
 			}
 		}
 	}
-	if len(lines) > 0 && lines[0].Text == "" {
+	for len(lines) > 0 && lines[0].Text == "" {
 		lines = lines[1:]
 	}
 	return lines
 }
 
-// lineTexts flattens rendered lines to strings, optionally dropping the
-// technical ones. A leading blank left behind by filtering is trimmed.
+// markdownBlock splits a text block into lines, recognizing fenced code blocks
+// and markdown tables (which need multi-line context); inline markup (bold,
+// code, headings, lists) is handled per-line at draw time.
+func markdownBlock(text string) []Line {
+	src := strings.Split(strings.TrimRight(text, "\n"), "\n")
+	var out []Line
+	inFence := false
+	for i := 0; i < len(src); i++ {
+		line := src[i]
+		if strings.HasPrefix(strings.TrimSpace(line), "```") {
+			inFence = !inFence
+			continue // drop the fence markers themselves
+		}
+		if inFence {
+			out = append(out, Line{line, kCode})
+			continue
+		}
+		if strings.Contains(line, "|") && i+1 < len(src) && isTableSep(src[i+1]) {
+			tbl, consumed := buildTable(src[i:])
+			out = append(out, tbl...)
+			i += consumed - 1
+			continue
+		}
+		out = append(out, Line{line, kText})
+	}
+	return out
+}
+
+// isTableSep reports whether a line is a markdown table separator, e.g.
+// "|---|:--:|" or "--- | ---".
+func isTableSep(s string) bool {
+	t := strings.TrimSpace(s)
+	if t == "" || !strings.Contains(t, "-") {
+		return false
+	}
+	for _, r := range t {
+		if r != '|' && r != '-' && r != ':' && r != ' ' {
+			return false
+		}
+	}
+	return true
+}
+
+// buildTable formats a markdown table (starting at src[0], separator at src[1])
+// into aligned, box-drawn lines. It returns the emitted lines and how many
+// source lines it consumed.
+func buildTable(src []string) ([]Line, int) {
+	header := splitCells(src[0])
+	var rows [][]string
+	consumed := 2 // header + separator
+	for i := 2; i < len(src); i++ {
+		if !strings.Contains(src[i], "|") {
+			break
+		}
+		rows = append(rows, splitCells(src[i]))
+		consumed++
+	}
+
+	ncol := len(header)
+	for _, r := range rows {
+		if len(r) > ncol {
+			ncol = len(r)
+		}
+	}
+	widths := make([]int, ncol)
+	measure := func(cells []string) {
+		for i := 0; i < ncol; i++ {
+			if i < len(cells) {
+				if w := utf8.RuneCountInString(cells[i]); w > widths[i] {
+					widths[i] = w
+				}
+			}
+		}
+	}
+	measure(header)
+	for _, r := range rows {
+		measure(r)
+	}
+
+	pad := func(cells []string) string {
+		parts := make([]string, ncol)
+		for i := 0; i < ncol; i++ {
+			c := ""
+			if i < len(cells) {
+				c = cells[i]
+			}
+			parts[i] = c + strings.Repeat(" ", widths[i]-utf8.RuneCountInString(c))
+		}
+		return strings.Join(parts, " │ ")
+	}
+	sepParts := make([]string, ncol)
+	for i := range sepParts {
+		sepParts[i] = strings.Repeat("─", widths[i])
+	}
+
+	out := []Line{
+		{pad(header), kTableHead},
+		{strings.Join(sepParts, "─┼─"), kTableSep},
+	}
+	for _, r := range rows {
+		out = append(out, Line{pad(r), kTableRow})
+	}
+	return out, consumed
+}
+
+// splitCells splits a markdown table row into trimmed, marker-stripped cells.
+func splitCells(line string) []string {
+	t := strings.TrimSpace(line)
+	t = strings.TrimPrefix(t, "|")
+	t = strings.TrimSuffix(t, "|")
+	parts := strings.Split(t, "|")
+	for i := range parts {
+		parts[i] = stripMarkers(strings.TrimSpace(parts[i]))
+	}
+	return parts
+}
+
+// stripMarkers removes inline markdown emphasis markers, for width and for
+// plain (table-cell) display.
+func stripMarkers(s string) string {
+	return strings.NewReplacer("**", "", "`", "", "*", "").Replace(s)
+}
+
+// lineTexts flattens rendered lines to strings, optionally dropping technical
+// ones. A leading blank left behind by filtering is trimmed.
 func lineTexts(lines []Line, hideTech bool) []string {
 	out := make([]string, 0, len(lines))
 	for _, l := range lines {
-		if hideTech && l.Tech {
+		if hideTech && l.Kind.tech() {
 			continue
 		}
 		out = append(out, l.Text)

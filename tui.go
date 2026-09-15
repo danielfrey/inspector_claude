@@ -2,6 +2,7 @@ package main
 
 import (
 	"fmt"
+	"os"
 	"sort"
 	"strings"
 	"time"
@@ -12,6 +13,19 @@ import (
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
 )
+
+type fileStat struct {
+	mod  time.Time
+	size int64
+}
+
+func statFile(p string) (fileStat, error) {
+	fi, err := os.Stat(p)
+	if err != nil {
+		return fileStat{}, err
+	}
+	return fileStat{fi.ModTime(), fi.Size()}, nil
+}
 
 // --- styles (adaptive: readable in light and dark terminals) ---------------
 
@@ -32,6 +46,18 @@ var (
 	stClaudeHdr = lipgloss.NewStyle().Bold(true).Foreground(cClaude)
 	stToolHdr   = lipgloss.NewStyle().Foreground(cTool)
 	stThink     = lipgloss.NewStyle().Foreground(cDim).Italic(true)
+
+	// inline markdown styles
+	stPlain     = lipgloss.NewStyle()
+	stBold      = lipgloss.NewStyle().Bold(true).Foreground(lipgloss.AdaptiveColor{Light: "#111111", Dark: "#ffffff"})
+	stItalic    = lipgloss.NewStyle().Italic(true)
+	stCode      = lipgloss.NewStyle().Foreground(cAccent)
+	stCodeBlock = lipgloss.NewStyle().Foreground(lipgloss.AdaptiveColor{Light: "#6a737d", Dark: "#b7c0cc"})
+	stHeading   = lipgloss.NewStyle().Bold(true).Foreground(cAccent)
+	stBullet    = lipgloss.NewStyle().Foreground(cAccent)
+	stQuote     = lipgloss.NewStyle().Foreground(cDim).Italic(true)
+	stTableHead = lipgloss.NewStyle().Bold(true)
+	stLive      = lipgloss.NewStyle().Bold(true).Foreground(cUser)
 )
 
 type mode int
@@ -67,14 +93,20 @@ type model struct {
 
 	// detail state
 	dTitle     string
-	rawLines   []Line   // tagged source lines (kept to re-wrap/re-filter cheaply)
-	dLines     []string // unstyled, wrapped display lines (after tech filter)
+	rawLines   []Line // tagged source lines (kept to re-wrap/re-filter cheaply)
+	dLines     []Line // wrapped display lines (after tech filter)
 	dTop       int
 	matches    []int // indices into dLines containing the query
 	matchPos   int
 	hideTech   bool // hide tool calls / results / thinking -> conversation only
 	returnMode mode // browse mode to return to when leaving detail
 	err        error
+
+	// live-follow state (detail view tails the file as it grows; read-only)
+	curPath string
+	curMod  time.Time
+	curSize int64
+	follow  bool
 }
 
 func newModel(sessions []session.Session) model {
@@ -82,12 +114,19 @@ func newModel(sessions []session.Session) model {
 	ti.Placeholder = "search all transcripts…"
 	ti.Prompt = "🔍 "
 	ti.Focus()
-	m := model{all: sessions, input: ti}
+	m := model{all: sessions, input: ti, follow: true}
 	m.refilter()
 	return m
 }
 
-func (m model) Init() tea.Cmd { return textinput.Blink }
+// tickMsg drives the live-follow poll while a session is open.
+type tickMsg time.Time
+
+func tick() tea.Cmd {
+	return tea.Tick(time.Second, func(t time.Time) tea.Msg { return tickMsg(t) })
+}
+
+func (m model) Init() tea.Cmd { return tea.Batch(textinput.Blink, tick()) }
 
 func (m *model) query() string { return strings.ToLower(strings.TrimSpace(m.input.Value())) }
 
@@ -131,6 +170,11 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.rebuildDetail() // re-wrap to new width
 		}
 		return m, nil
+	case tickMsg:
+		if m.mode == modeDetail && m.follow && m.fileChanged() {
+			m.reloadDetail()
+		}
+		return m, tick() // keep the single poll loop alive
 	case tea.KeyMsg:
 		switch m.mode {
 		case modeDetail:
@@ -286,6 +330,13 @@ func (m model) updateDetail(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		m.hideTech = !m.hideTech
 		m.rebuildDetail()
 		m.dTop = m.clampTop(m.dTop)
+	case "r":
+		m.reloadDetail() // manual reload (Cmd-R is captured by the terminal/OS)
+	case "f":
+		m.follow = !m.follow
+		if m.follow && m.fileChanged() {
+			m.reloadDetail()
+		}
 	}
 	return m, nil
 }
@@ -293,6 +344,7 @@ func (m model) updateDetail(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 func (m *model) openDetail(s session.Session) {
 	entries, err := session.ReadEntries(s.Path)
 	m.err = err
+	m.curPath = s.Path
 	m.dTitle = fmt.Sprintf("%s  ·  %s  ·  %s", s.Project, s.ID, s.Branch)
 	m.rawLines = renderEntries(entries)
 	m.returnMode = m.mode
@@ -302,28 +354,84 @@ func (m *model) openDetail(s session.Session) {
 	if len(m.matches) > 0 {
 		m.dTop = m.clampTop(m.matches[0])
 	}
+	m.snapshotStat()
 }
 
-// rawLines is kept so width changes can re-wrap without re-reading the file.
-// (declared here to keep openDetail readable)
+// rebuildDetail re-filters and re-wraps rawLines into display lines. Prose is
+// word-wrapped; code and table lines are kept intact (hard-cut if too wide).
 func (m *model) rebuildDetail() {
 	width := m.w - 2
 	if width < 20 {
 		width = 20
 	}
-	var wrapped []string
-	for _, l := range lineTexts(m.rawLines, m.hideTech) {
-		wrapped = append(wrapped, wrap(l, width)...)
+	var out []Line
+	for _, l := range m.rawLines {
+		if m.hideTech && l.Kind.tech() {
+			continue
+		}
+		switch l.Kind {
+		case kCode, kTableHead, kTableRow, kTableSep:
+			out = append(out, Line{fitPlain(l.Text, width), l.Kind})
+		default:
+			for _, w := range wrap(l.Text, width) {
+				out = append(out, Line{w, l.Kind})
+			}
+		}
 	}
-	m.dLines = wrapped
+	for len(out) > 0 && out[0].Text == "" {
+		out = out[1:]
+	}
+	m.dLines = out
+
 	m.matches = m.matches[:0]
 	if q := m.query(); q != "" {
 		for i, l := range m.dLines {
-			if strings.Contains(strings.ToLower(l), q) {
+			if strings.Contains(strings.ToLower(l.Text), q) {
 				m.matches = append(m.matches, i)
 			}
 		}
 	}
+}
+
+// --- live follow (read-only file tailing) ----------------------------------
+
+func (m *model) snapshotStat() {
+	if fi, err := statFile(m.curPath); err == nil {
+		m.curMod, m.curSize = fi.mod, fi.size
+	}
+}
+
+// fileChanged reports whether the open transcript has grown or been touched
+// since the last snapshot.
+func (m *model) fileChanged() bool {
+	fi, err := statFile(m.curPath)
+	if err != nil {
+		return false
+	}
+	return fi.size != m.curSize || !fi.mod.Equal(m.curMod)
+}
+
+// reloadDetail re-reads the transcript, preserving scroll — but sticking to the
+// bottom if we were already there, so the view tails new turns live.
+func (m *model) reloadDetail() {
+	atBottom := m.dTop >= m.maxTop()
+	entries, err := session.ReadEntries(m.curPath)
+	m.err = err
+	m.rawLines = renderEntries(entries)
+	m.rebuildDetail()
+	if atBottom {
+		m.dTop = m.maxTop()
+	} else {
+		m.dTop = m.clampTop(m.dTop)
+	}
+	m.snapshotStat()
+}
+
+func (m *model) maxTop() int {
+	if t := len(m.dLines) - m.detailRows(); t > 0 {
+		return t
+	}
+	return 0
 }
 
 func (m *model) jumpMatch(dir int) {
@@ -488,59 +596,224 @@ func (m model) viewDetail() string {
 	if m.hideTech {
 		viewMode = "conversation only"
 	}
-	b.WriteString(stDim.Render(fmt.Sprintf("line %d/%d%s  ·  %s", m.dTop+1, len(m.dLines), pos, viewMode)) + "\n")
+	status := stDim.Render(fmt.Sprintf("line %d/%d%s  ·  %s  ·  ", m.dTop+1, len(m.dLines), pos, viewMode))
+	if m.follow {
+		status += stLive.Render("● live")
+	} else {
+		status += stDim.Render("paused")
+	}
+	b.WriteString(status + "\n")
 	b.WriteString(stDim.Render(strings.Repeat("─", m.w)) + "\n")
 
 	rows := m.detailRows()
 	q := m.query()
 	end := min(m.dTop+rows, len(m.dLines))
 	for i := m.dTop; i < end; i++ {
-		b.WriteString(styleLine(m.dLines[i], q) + "\n")
+		b.WriteString(renderKindLine(m.dLines[i], q) + "\n")
 	}
 	for i := end; i < m.dTop+rows; i++ {
 		b.WriteString("\n")
 	}
 	b.WriteString(stDim.Render(strings.Repeat("─", m.w)) + "\n")
-	b.WriteString(stDim.Render("↑↓/jk scroll · space page · n/N match · t tech on/off · g/G top/bottom · esc back"))
+	b.WriteString(stDim.Render("↑↓/jk scroll · space page · n/N match · t tech · f follow · r reload · esc back"))
 	return b.String()
 }
 
-// styleLine colors a rendered transcript line by its role marker and highlights
-// query matches within it.
-func styleLine(l, q string) string {
-	styled := l
-	switch {
-	case strings.HasPrefix(l, "▶ YOU"):
-		styled = stUserHdr.Render(l)
-	case strings.HasPrefix(l, "● CLAUDE"):
-		styled = stClaudeHdr.Render(l)
-	case strings.HasPrefix(l, "  ⚙"):
-		styled = stToolHdr.Render(l)
-	case strings.HasPrefix(l, "  · thinking") || strings.HasPrefix(l, "  ⎿"):
-		styled = stThink.Render(l)
-	}
-	if q == "" {
-		return styled
-	}
-	return highlight(l, q) // highlight overrides role color to keep matches visible
+// --- line styling (markdown + search highlight) ----------------------------
+
+// span is a run of text with one style, the unit the highlighter splits on.
+type span struct {
+	text  string
+	style lipgloss.Style
 }
 
-// highlight wraps every case-insensitive occurrence of q in l with stMatch.
-func highlight(l, q string) string {
-	low := strings.ToLower(l)
-	var b strings.Builder
-	for {
-		idx := strings.Index(low, q)
-		if idx < 0 {
-			b.WriteString(l)
-			break
+// renderKindLine styles one display line by its kind, then overlays search
+// highlighting for the active query.
+func renderKindLine(l Line, q string) string {
+	switch l.Kind {
+	case kHeaderYou:
+		return stUserHdr.Render(l.Text)
+	case kHeaderClaude:
+		return stClaudeHdr.Render(l.Text)
+	case kThinking:
+		return stThink.Render(l.Text)
+	case kTool:
+		if strings.HasPrefix(strings.TrimSpace(l.Text), "⚙") {
+			return emit(overlay([]span{{l.Text, stToolHdr}}, q))
 		}
-		b.WriteString(l[:idx])
-		b.WriteString(stMatch.Render(l[idx : idx+len(q)]))
-		l = l[idx+len(q):]
-		low = low[idx+len(q):]
+		return emit(overlay([]span{{l.Text, stThink}}, q))
+	case kCode:
+		return emit(overlay([]span{{l.Text, stCodeBlock}}, q))
+	case kTableSep:
+		return stDim.Render(l.Text)
+	case kTableHead:
+		return emit(overlay(tableSpans(l.Text, true), q))
+	case kTableRow:
+		return emit(overlay(tableSpans(l.Text, false), q))
+	default:
+		return emit(overlay(inlineSpans(l.Text), q))
+	}
+}
+
+// inlineSpans parses a prose line into styled spans, recognizing headings,
+// bullets, blockquotes, bold, inline code and italics.
+func inlineSpans(line string) []span {
+	i := 0
+	for i < len(line) && line[i] == ' ' {
+		i++
+	}
+	indent, rest := line[:i], line[i:]
+	lead := []span{{indent, stPlain}}
+
+	switch {
+	case strings.HasPrefix(rest, "> "):
+		return append([]span{{indent, stPlain}, {"▏ ", stQuote}}, parseEmphasis(strings.TrimPrefix(rest, "> "), stQuote)...)
+	case isHeading(rest):
+		return append(lead, parseEmphasis(headingText(rest), stHeading)...)
+	case bulletPrefix(rest):
+		return append([]span{{indent, stPlain}, {"• ", stBullet}}, parseEmphasis(rest[2:], stPlain)...)
+	default:
+		return append(lead, parseEmphasis(rest, stPlain)...)
+	}
+}
+
+// parseEmphasis splits text into spans on `code`, **bold** and *italic*.
+func parseEmphasis(s string, base lipgloss.Style) []span {
+	var spans []span
+	rs := []rune(s)
+	var buf []rune
+	flush := func() {
+		if len(buf) > 0 {
+			spans = append(spans, span{string(buf), base})
+			buf = buf[:0]
+		}
+	}
+	for i := 0; i < len(rs); i++ {
+		switch {
+		case rs[i] == '`':
+			if j := idxRune(rs, '`', i+1); j > i {
+				flush()
+				spans = append(spans, span{string(rs[i+1 : j]), stCode})
+				i = j
+				continue
+			}
+		case rs[i] == '*' && i+1 < len(rs) && rs[i+1] == '*':
+			if j := idxSeq(rs, i+2); j > i {
+				flush()
+				spans = append(spans, span{string(rs[i+2 : j]), stBold})
+				i = j + 1
+				continue
+			}
+		case rs[i] == '*':
+			if j := idxRune(rs, '*', i+1); j > i {
+				flush()
+				spans = append(spans, span{string(rs[i+1 : j]), stItalic})
+				i = j
+				continue
+			}
+		}
+		buf = append(buf, rs[i])
+	}
+	flush()
+	return spans
+}
+
+// tableSpans styles a pre-aligned table row: dim pipes, bold header cells.
+func tableSpans(line string, head bool) []span {
+	cell := stPlain
+	if head {
+		cell = stTableHead
+	}
+	var spans []span
+	var buf []rune
+	for _, r := range line {
+		if r == '│' {
+			if len(buf) > 0 {
+				spans = append(spans, span{string(buf), cell})
+				buf = buf[:0]
+			}
+			spans = append(spans, span{"│", stDim})
+			continue
+		}
+		buf = append(buf, r)
+	}
+	if len(buf) > 0 {
+		spans = append(spans, span{string(buf), cell})
+	}
+	return spans
+}
+
+// overlay splits spans on case-insensitive matches of q, styling matches with
+// stMatch so search hits stay visible over any markdown styling.
+func overlay(spans []span, q string) []span {
+	if q == "" {
+		return spans
+	}
+	var out []span
+	for _, sp := range spans {
+		low := strings.ToLower(sp.text)
+		rest := sp.text
+		for {
+			idx := strings.Index(low, q)
+			if idx < 0 {
+				if rest != "" {
+					out = append(out, span{rest, sp.style})
+				}
+				break
+			}
+			if idx > 0 {
+				out = append(out, span{rest[:idx], sp.style})
+			}
+			out = append(out, span{rest[idx : idx+len(q)], stMatch})
+			rest = rest[idx+len(q):]
+			low = low[idx+len(q):]
+		}
+	}
+	return out
+}
+
+func emit(spans []span) string {
+	var b strings.Builder
+	for _, sp := range spans {
+		b.WriteString(sp.style.Render(sp.text))
 	}
 	return b.String()
+}
+
+func isHeading(s string) bool {
+	n := 0
+	for n < len(s) && s[n] == '#' {
+		n++
+	}
+	return n >= 1 && n <= 6 && n < len(s) && s[n] == ' '
+}
+
+func headingText(s string) string {
+	return strings.TrimLeft(strings.TrimLeft(s, "#"), " ")
+}
+
+func bulletPrefix(s string) bool {
+	return len(s) >= 2 && (s[0] == '-' || s[0] == '*' || s[0] == '+') && s[1] == ' '
+}
+
+func idxRune(rs []rune, r rune, from int) int {
+	for i := from; i < len(rs); i++ {
+		if rs[i] == r {
+			return i
+		}
+	}
+	return -1
+}
+
+// idxSeq finds the next "**" at or after `from`, returning the index of its
+// first '*'.
+func idxSeq(rs []rune, from int) int {
+	for i := from; i+1 < len(rs); i++ {
+		if rs[i] == '*' && rs[i+1] == '*' {
+			return i
+		}
+	}
+	return -1
 }
 
 // --- geometry helpers ------------------------------------------------------
