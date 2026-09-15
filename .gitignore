@@ -1,0 +1,18 @@
+# Build output
+/bin/
+/dist/
+inspector_claude
+inspector_claude-*
+*.exe
+
+# Go
+*.test
+*.out
+coverage.*
+vendor/
+
+# Editor / OS
+.DS_Store
+*.swp
+.idea/
+.vscode/
