@@ -107,10 +107,13 @@ type model struct {
 	err         error
 
 	// live-follow state (detail view tails the file as it grows; read-only)
+	cur     session.Session
 	curPath string
 	curMod  time.Time
 	curSize int64
 	follow  bool
+
+	flash string // transient status message (e.g. "opened in browser")
 }
 
 func newModel(sessions []session.Session) model {
@@ -183,6 +186,7 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 		return m, tick() // keep the single poll loop alive
 	case tea.KeyMsg:
+		m.flash = "" // transient; cleared on the next key, set again by handlers
 		switch m.mode {
 		case modeDetail:
 			return m.updateDetail(msg)
@@ -236,6 +240,11 @@ func (m model) updateList(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			m.openDetail(m.filtered[m.cursor])
 		}
 		return m, nil
+	case "ctrl+o":
+		if len(m.filtered) > 0 {
+			m.openSession(m.filtered[m.cursor])
+		}
+		return m, nil
 	}
 	var cmd tea.Cmd
 	m.input, cmd = m.input.Update(msg)
@@ -280,6 +289,11 @@ func (m model) updateProjects(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		}
 		if m.curSessions() > 0 {
 			m.openDetail(m.groups[m.projCursor].Sessions[m.sessCursor])
+		}
+		return m, nil
+	case "ctrl+o":
+		if m.curSessions() > 0 {
+			m.openSession(m.groups[m.projCursor].Sessions[m.sessCursor])
 		}
 		return m, nil
 	}
@@ -354,6 +368,8 @@ func (m model) updateDetail(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		if m.follow && m.fileChanged() {
 			m.reloadDetail()
 		}
+	case "ctrl+o":
+		m.openSession(m.cur) // render to HTML and open in the browser
 	}
 	return m, nil
 }
@@ -394,6 +410,7 @@ func (m model) updateISearch(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 func (m *model) openDetail(s session.Session) {
 	entries, err := session.ReadEntries(s.Path)
 	m.err = err
+	m.cur = s
 	m.curPath = s.Path
 	m.dTitle = fmt.Sprintf("%s  ·  %s  ·  %s", s.Project, s.ID, s.Branch)
 	m.rawLines = renderEntries(entries)
@@ -497,6 +514,26 @@ func (m *model) maxTop() int {
 	return 0
 }
 
+// openSession renders a session to a standalone HTML file and opens it in the
+// default browser (no server needed). It records a status flash either way.
+func (m *model) openSession(s session.Session) {
+	entries, err := session.ReadEntries(s.Path)
+	if err != nil {
+		m.flash = "open failed: " + err.Error()
+		return
+	}
+	path, err := writeSessionHTML(s, entries)
+	if err != nil {
+		m.flash = "open failed: " + err.Error()
+		return
+	}
+	if err := openInBrowser(path); err != nil {
+		m.flash = "wrote " + path + " (open failed: " + err.Error() + ")"
+		return
+	}
+	m.flash = "opened in browser ↗"
+}
+
 func (m *model) jumpMatch(dir int) {
 	if len(m.matches) == 0 {
 		return
@@ -545,7 +582,11 @@ func (m model) viewList() string {
 		b.WriteString("\n")
 	}
 	b.WriteString(stDim.Render(strings.Repeat("─", m.w)) + "\n")
-	b.WriteString(stDim.Render("↑↓ move · enter open · tab projects view · type to search · esc clear/quit"))
+	foot := "↑↓ move · enter open · ^o browser · tab projects · type search · esc clear/quit"
+	if m.flash != "" {
+		foot = m.flash
+	}
+	b.WriteString(stDim.Render(foot))
 	return b.String()
 }
 
@@ -574,7 +615,11 @@ func (m model) viewProjects() string {
 		b.WriteString(left[i] + " " + sep + " " + right[i] + "\n")
 	}
 	b.WriteString(stDim.Render(strings.Repeat("─", m.w)) + "\n")
-	b.WriteString(stDim.Render("tab list · ←/→ pane · ↑↓ move · enter open · type search · esc quit"))
+	foot := "tab list · ←/→ pane · ↑↓ move · enter open · ^o browser · esc quit"
+	if m.flash != "" {
+		foot = m.flash
+	}
+	b.WriteString(stDim.Render(foot))
 	return b.String()
 }
 
@@ -665,6 +710,9 @@ func (m model) viewDetail() string {
 	} else {
 		status += stDim.Render("paused")
 	}
+	if m.flash != "" {
+		status += stHit.Render("   " + m.flash)
+	}
 	b.WriteString(status + "\n")
 	b.WriteString(stDim.Render(strings.Repeat("─", m.w)) + "\n")
 
@@ -681,7 +729,7 @@ func (m model) viewDetail() string {
 	if m.isearch {
 		b.WriteString(m.dinput.View())
 	} else {
-		b.WriteString(stDim.Render("↑↓/jk scroll · / search · n/N match · t tech · f follow · r reload · esc back"))
+		b.WriteString(stDim.Render("↑↓/jk scroll · / search · n/N match · t tech · f follow · ^o browser · esc back"))
 	}
 	return b.String()
 }

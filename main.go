@@ -31,6 +31,8 @@ func main() {
 		searchFlag = flag.String("search", "", "print sessions matching query and exit (no TUI)")
 		showFlag   = flag.String("show", "", "print one session (by id or path) and exit (no TUI)")
 		convFlag   = flag.Bool("conversation", false, "with --show: hide tool calls/results/thinking")
+		htmlFlag   = flag.String("html", "", "render one session (by id or path) as HTML to stdout")
+		openFlag   = flag.String("open", "", "render one session and open it in the browser, then exit")
 		versFlag   = flag.Bool("version", false, "print version and exit")
 	)
 	flag.Parse()
@@ -51,6 +53,10 @@ func main() {
 	}
 
 	switch {
+	case *htmlFlag != "":
+		cliHTML(sessions, *htmlFlag, false)
+	case *openFlag != "":
+		cliHTML(sessions, *openFlag, true)
 	case *showFlag != "":
 		cliShow(sessions, *showFlag, *convFlag)
 	case *searchFlag != "":
@@ -115,6 +121,35 @@ func cliShow(sessions []session.Session, ref string, conversationOnly bool) {
 	for _, l := range lineTexts(renderEntries(entries), conversationOnly) {
 		fmt.Println(l)
 	}
+}
+
+// cliHTML renders a session to HTML: to stdout, or (when open) to a temp file
+// opened in the default browser.
+func cliHTML(sessions []session.Session, ref string, open bool) {
+	s := findSession(sessions, ref)
+	if s == nil {
+		fmt.Fprintf(os.Stderr, "inspector_claude: no session matching %q\n", ref)
+		os.Exit(1)
+	}
+	entries, err := session.ReadEntries(s.Path)
+	if err != nil {
+		fmt.Fprintln(os.Stderr, "inspector_claude:", err)
+		os.Exit(1)
+	}
+	if !open {
+		fmt.Print(renderSessionHTML(*s, entries))
+		return
+	}
+	path, err := writeSessionHTML(*s, entries)
+	if err != nil {
+		fmt.Fprintln(os.Stderr, "inspector_claude:", err)
+		os.Exit(1)
+	}
+	if err := openInBrowser(path); err != nil {
+		fmt.Fprintln(os.Stderr, "inspector_claude: wrote", path, "but could not open browser:", err)
+		os.Exit(1)
+	}
+	fmt.Fprintln(os.Stderr, "opened", path)
 }
 
 // findSession resolves a session by full/prefix id, or by file path/basename.

@@ -59,6 +59,7 @@ chat from either:
 | Detail  | `t`             | toggle technical lines (tool calls/results/thinking) |
 | Detail  | `f`             | toggle live-follow (auto-reload as the file grows) |
 | Detail  | `r`             | reload now (Cmd-R is captured by the terminal/OS) |
+| List/Proj/Detail | `ctrl+o` | open this chat in the browser (standalone HTML) |
 | Detail  | `g` / `G`       | top / bottom |
 | Detail  | `esc` / `q`     | back to list |
 
@@ -79,6 +80,18 @@ tool calls, tool results and thinking.
 The chat renders inline markdown — **bold**, `inline code`, *italics*,
 headings, bullet/numbered lists, blockquotes, fenced code blocks and aligned
 tables — while keeping search matches highlighted on top.
+
+### Open in the browser (no server)
+
+`ctrl+o` renders the current chat to a **standalone HTML file** (markdown as real
+HTML — headings, bold, code, tables, collapsible thinking/tool blocks; light and
+dark) under your temp dir and opens it in the default browser. No web server, no
+port — it works offline and from a shared binary. From the CLI:
+
+```sh
+inspector_claude --open <id>          # render + open in the browser
+inspector_claude --html <id> > x.html # render HTML to stdout (to save/share)
+```
 
 A `● live` indicator shows that the open session is being followed: because
 transcripts only ever grow, the app polls the file once a second (read-only)
