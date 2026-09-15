@@ -3,6 +3,9 @@ PKG     := .
 DIST    := dist
 VERSION := $(shell git describe --tags --always --dirty 2>/dev/null || echo dev)
 LDFLAGS := -s -w -X main.version=$(VERSION)
+# -trimpath scrubs local filesystem paths (e.g. /Users/<you>/...) from the
+# binary, so a shared/airdropped executable leaks no username or build paths.
+BUILDFLAGS := -trimpath -ldflags "$(LDFLAGS)"
 
 # Pure-Go (CGO off) => trivially cross-compilable, static single binary.
 export CGO_ENABLED = 0
@@ -10,10 +13,10 @@ export CGO_ENABLED = 0
 .PHONY: build install run vet fmt clean cross
 
 build: ## build for the host platform into ./bin
-	go build -ldflags "$(LDFLAGS)" -o bin/$(BIN) $(PKG)
+	go build $(BUILDFLAGS) -o bin/$(BIN) $(PKG)
 
 install: ## go install into $GOBIN / $GOPATH/bin
-	go install -ldflags "$(LDFLAGS)" $(PKG)
+	go install $(BUILDFLAGS) $(PKG)
 
 run: ## run the TUI
 	go run $(PKG)
@@ -43,6 +46,6 @@ cross: ## build every target in PLATFORMS into ./dist
 		ext=""; [ "$$os" = "windows" ] && ext=".exe"; \
 		out=$(DIST)/$(BIN)-$$os-$$arch$$ext; \
 		echo "building $$out"; \
-		GOOS=$$os GOARCH=$$arch go build -ldflags "$(LDFLAGS)" -o $$out $(PKG) || exit 1; \
+		GOOS=$$os GOARCH=$$arch go build $(BUILDFLAGS) -o $$out $(PKG) || exit 1; \
 	done
 	@echo "done -> $(DIST)/"
