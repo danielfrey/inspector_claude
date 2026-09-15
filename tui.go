@@ -2,7 +2,9 @@ package main
 
 import (
 	"fmt"
+	"sort"
 	"strings"
+	"time"
 
 	"inspector_claude/internal/session"
 
@@ -23,6 +25,7 @@ var (
 	stTitle     = lipgloss.NewStyle().Bold(true).Foreground(cAccent)
 	stDim       = lipgloss.NewStyle().Foreground(cDim)
 	stSel       = lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("#ffffff")).Background(cAccent)
+	stSelIdle   = lipgloss.NewStyle().Foreground(cAccent).Background(lipgloss.AdaptiveColor{Light: "#dbe7f3", Dark: "#33383f"})
 	stHit       = lipgloss.NewStyle().Bold(true)
 	stMatch     = lipgloss.NewStyle().Foreground(lipgloss.Color("#000000")).Background(lipgloss.AdaptiveColor{Light: "#ffe066", Dark: "#ffd33d"})
 	stUserHdr   = lipgloss.NewStyle().Bold(true).Foreground(cUser)
@@ -34,9 +37,18 @@ var (
 type mode int
 
 const (
-	modeList mode = iota
-	modeDetail
+	modeList     mode = iota // flat chronological list across all projects
+	modeProjects             // two-pane: projects left, that project's sessions right
+	modeDetail               // one session's chat
 )
+
+// projGroup is the sessions of one project (directory), for the projects view.
+type projGroup struct {
+	Name     string
+	Path     string
+	Latest   time.Time
+	Sessions []session.Session
+}
 
 type model struct {
 	all      []session.Session
@@ -47,15 +59,22 @@ type model struct {
 	mode     mode
 	w, h     int
 
+	// projects view
+	groups     []projGroup
+	projCursor int
+	sessCursor int
+	activePane int // 0 = projects (left), 1 = sessions (right)
+
 	// detail state
-	dTitle   string
-	rawLines []Line   // tagged source lines (kept to re-wrap/re-filter cheaply)
-	dLines   []string // unstyled, wrapped display lines (after tech filter)
-	dTop     int
-	matches  []int // indices into dLines containing the query
-	matchPos int
-	hideTech bool // hide tool calls / results / thinking -> conversation only
-	err      error
+	dTitle     string
+	rawLines   []Line   // tagged source lines (kept to re-wrap/re-filter cheaply)
+	dLines     []string // unstyled, wrapped display lines (after tech filter)
+	dTop       int
+	matches    []int // indices into dLines containing the query
+	matchPos   int
+	hideTech   bool // hide tool calls / results / thinking -> conversation only
+	returnMode mode // browse mode to return to when leaving detail
+	err        error
 }
 
 func newModel(sessions []session.Session) model {
@@ -63,11 +82,9 @@ func newModel(sessions []session.Session) model {
 	ti.Placeholder = "search all transcripts…"
 	ti.Prompt = "🔍 "
 	ti.Focus()
-	return model{
-		all:      sessions,
-		filtered: sessions,
-		input:    ti,
-	}
+	m := model{all: sessions, input: ti}
+	m.refilter()
+	return m
 }
 
 func (m model) Init() tea.Cmd { return textinput.Blink }
@@ -77,6 +94,33 @@ func (m *model) query() string { return strings.ToLower(strings.TrimSpace(m.inpu
 func (m *model) refilter() {
 	m.filtered = filterSessions(m.all, m.input.Value())
 	m.cursor, m.top = 0, 0
+	m.groups = groupsOf(m.filtered)
+	m.projCursor, m.sessCursor, m.activePane = 0, 0, 0
+}
+
+// groupsOf buckets sessions by project directory, newest project first. Input
+// is assumed already sorted newest-first, so each bucket stays newest-first too.
+func groupsOf(sessions []session.Session) []projGroup {
+	idx := map[string]int{}
+	var groups []projGroup
+	for _, s := range sessions {
+		key := s.ProjectPath
+		if key == "" {
+			key = s.Project
+		}
+		i, ok := idx[key]
+		if !ok {
+			i = len(groups)
+			idx[key] = i
+			groups = append(groups, projGroup{Name: s.Project, Path: key})
+		}
+		groups[i].Sessions = append(groups[i].Sessions, s)
+		if t := s.SortTime(); t.After(groups[i].Latest) {
+			groups[i].Latest = t
+		}
+	}
+	sort.SliceStable(groups, func(a, b int) bool { return groups[a].Latest.After(groups[b].Latest) })
+	return groups
 }
 
 func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
@@ -88,10 +132,14 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 		return m, nil
 	case tea.KeyMsg:
-		if m.mode == modeDetail {
+		switch m.mode {
+		case modeDetail:
 			return m.updateDetail(msg)
+		case modeProjects:
+			return m.updateProjects(msg)
+		default:
+			return m.updateList(msg)
 		}
-		return m.updateList(msg)
 	}
 	return m, nil
 }
@@ -100,6 +148,9 @@ func (m model) updateList(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	switch msg.String() {
 	case "ctrl+c":
 		return m, tea.Quit
+	case "tab":
+		m.mode = modeProjects
+		return m, nil
 	case "esc":
 		if m.input.Value() != "" {
 			m.input.SetValue("")
@@ -141,13 +192,79 @@ func (m model) updateList(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	return m, cmd
 }
 
+func (m model) updateProjects(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
+	switch msg.String() {
+	case "ctrl+c":
+		return m, tea.Quit
+	case "tab":
+		m.mode = modeList
+		return m, nil
+	case "esc":
+		if m.input.Value() != "" {
+			m.input.SetValue("")
+			m.refilter()
+			return m, nil
+		}
+		return m, tea.Quit
+	case "left":
+		m.activePane = 0
+		return m, nil
+	case "right":
+		if m.curSessions() > 0 {
+			m.activePane = 1
+		}
+		return m, nil
+	case "up", "ctrl+p":
+		m.moveProjects(-1)
+		return m, nil
+	case "down", "ctrl+n":
+		m.moveProjects(1)
+		return m, nil
+	case "enter":
+		if m.activePane == 0 {
+			if m.curSessions() > 0 {
+				m.activePane = 1
+			}
+			return m, nil
+		}
+		if m.curSessions() > 0 {
+			m.openDetail(m.groups[m.projCursor].Sessions[m.sessCursor])
+		}
+		return m, nil
+	}
+	var cmd tea.Cmd
+	m.input, cmd = m.input.Update(msg)
+	m.refilter()
+	return m, cmd
+}
+
+// curSessions is the session count of the currently selected project (0-safe).
+func (m *model) curSessions() int {
+	if m.projCursor < 0 || m.projCursor >= len(m.groups) {
+		return 0
+	}
+	return len(m.groups[m.projCursor].Sessions)
+}
+
+func (m *model) moveProjects(d int) {
+	if len(m.groups) == 0 {
+		return
+	}
+	if m.activePane == 0 {
+		m.projCursor = clamp(m.projCursor+d, 0, len(m.groups)-1)
+		m.sessCursor = 0 // reset session selection when switching projects
+	} else {
+		m.sessCursor = clamp(m.sessCursor+d, 0, m.curSessions()-1)
+	}
+}
+
 func (m model) updateDetail(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	page := m.detailRows()
 	switch msg.String() {
 	case "ctrl+c":
 		return m, tea.Quit
 	case "esc", "q", "backspace", "left", "h":
-		m.mode = modeList
+		m.mode = m.returnMode
 		return m, nil
 	case "up", "k":
 		m.dTop = max(0, m.dTop-1)
@@ -178,6 +295,7 @@ func (m *model) openDetail(s session.Session) {
 	m.err = err
 	m.dTitle = fmt.Sprintf("%s  ·  %s  ·  %s", s.Project, s.ID, s.Branch)
 	m.rawLines = renderEntries(entries)
+	m.returnMode = m.mode
 	m.mode = modeDetail
 	m.dTop, m.matchPos = 0, 0
 	m.rebuildDetail()
@@ -222,10 +340,14 @@ func (m model) View() string {
 	if m.w == 0 {
 		return "loading…"
 	}
-	if m.mode == modeDetail {
+	switch m.mode {
+	case modeDetail:
 		return m.viewDetail()
+	case modeProjects:
+		return m.viewProjects()
+	default:
+		return m.viewList()
 	}
-	return m.viewList()
 }
 
 func (m model) viewList() string {
@@ -252,8 +374,84 @@ func (m model) viewList() string {
 		b.WriteString("\n")
 	}
 	b.WriteString(stDim.Render(strings.Repeat("─", m.w)) + "\n")
-	b.WriteString(stDim.Render("↑↓ move · enter open · type to search · esc clear/quit"))
+	b.WriteString(stDim.Render("↑↓ move · enter open · tab projects view · type to search · esc clear/quit"))
 	return b.String()
+}
+
+// viewProjects is the two-pane browser: projects (newest first) on the left,
+// the selected project's sessions on the right.
+func (m model) viewProjects() string {
+	var b strings.Builder
+	header := stTitle.Render("inspector — by project")
+	count := stDim.Render(fmt.Sprintf("  %d projects · %d sessions", len(m.groups), len(m.filtered)))
+	b.WriteString(header + count + "\n")
+	b.WriteString(m.input.View() + "\n")
+	b.WriteString(stDim.Render(strings.Repeat("─", m.w)) + "\n")
+
+	rows := m.listRows()
+	leftW := m.w * 2 / 5
+	leftW = clamp(leftW, 16, 40)
+	rightW := m.w - leftW - 3
+	if rightW < 10 {
+		rightW = 10
+	}
+
+	left := m.projectColumn(rows, leftW)
+	right := m.sessionColumn(rows, rightW)
+	sep := stDim.Render("│")
+	for i := 0; i < rows; i++ {
+		b.WriteString(left[i] + " " + sep + " " + right[i] + "\n")
+	}
+	b.WriteString(stDim.Render(strings.Repeat("─", m.w)) + "\n")
+	b.WriteString(stDim.Render("tab list · ←/→ pane · ↑↓ move · enter open · type search · esc quit"))
+	return b.String()
+}
+
+// projectColumn renders exactly `rows` fixed-width (`w`) lines for the left pane.
+func (m model) projectColumn(rows, w int) []string {
+	out := make([]string, 0, rows)
+	top := scrollTop(m.projCursor, rows, len(m.groups))
+	end := min(top+rows, len(m.groups))
+	for i := top; i < end; i++ {
+		g := m.groups[i]
+		line := fitPlain(fmt.Sprintf("%s  %s (%d)", g.Latest.Format("2006-01-02"), g.Name, len(g.Sessions)), w)
+		out = append(out, m.styleCell(line, i == m.projCursor, 0))
+	}
+	return padCol(out, rows, w)
+}
+
+// sessionColumn renders the right pane: the selected project's sessions.
+func (m model) sessionColumn(rows, w int) []string {
+	out := make([]string, 0, rows)
+	if m.curSessions() == 0 {
+		return padCol(out, rows, w)
+	}
+	sessions := m.groups[m.projCursor].Sessions
+	q := m.query()
+	top := scrollTop(m.sessCursor, rows, len(sessions))
+	end := min(top+rows, len(sessions))
+	for i := top; i < end; i++ {
+		s := sessions[i]
+		hits := ""
+		if q != "" {
+			hits = fmt.Sprintf(" [%d]", s.Matches(q))
+		}
+		line := fitPlain(fmt.Sprintf("%s  %s%s", s.SortTime().Format("2006-01-02"), oneLine(s.Title()), hits), w)
+		out = append(out, m.styleCell(line, i == m.sessCursor, 1))
+	}
+	return padCol(out, rows, w)
+}
+
+// styleCell highlights a selected cell, strongly if its pane is active, dimly if
+// not (so you can see the remembered selection in the inactive pane).
+func (m model) styleCell(line string, selected bool, pane int) string {
+	if !selected {
+		return line
+	}
+	if m.activePane == pane {
+		return stSel.Render(line)
+	}
+	return stSelIdle.Render(line)
 }
 
 func (m model) renderRow(s session.Session, selected bool, q string) string {
@@ -404,6 +602,59 @@ func wrap(s string, width int) []string {
 }
 
 func stripANSI(s string) string { return s } // hits already width-safe; placeholder
+
+// scrollTop keeps `cursor` visible within a window of `rows` over `n` items.
+func scrollTop(cursor, rows, n int) int {
+	if cursor < rows {
+		return 0
+	}
+	top := cursor - rows + 1
+	if top > n-rows {
+		top = n - rows
+	}
+	if top < 0 {
+		top = 0
+	}
+	return top
+}
+
+// fitPlain truncates or space-pads s to exactly w visible runes (assumes
+// single-width runes, which holds for dates and Latin project/session names).
+func fitPlain(s string, w int) string {
+	if w <= 0 {
+		return ""
+	}
+	r := []rune(s)
+	if len(r) > w {
+		if w == 1 {
+			return string(r[:1])
+		}
+		return string(r[:w-1]) + "…"
+	}
+	return s + strings.Repeat(" ", w-len(r))
+}
+
+// padCol pads a column to `rows` lines, each a blank cell of width w.
+func padCol(col []string, rows, w int) []string {
+	blank := strings.Repeat(" ", w)
+	for len(col) < rows {
+		col = append(col, blank)
+	}
+	return col
+}
+
+func clamp(v, lo, hi int) int {
+	if hi < lo {
+		return lo
+	}
+	if v < lo {
+		return lo
+	}
+	if v > hi {
+		return hi
+	}
+	return v
+}
 
 func max(a, b int) int {
 	if a > b {

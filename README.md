@@ -29,15 +29,29 @@ inspector_claude --show <id> --conversation  # conversation only (no tool calls/
 inspector_claude --root /path/to/dir   # use a non-default transcripts root
 ```
 
+### Two browse views
+
+`tab` toggles between them; both share the search box, and `enter` opens the
+chat from either:
+
+- **List** — a flat, chronological list of every session across all projects.
+- **Projects** — two panes: projects on the left (newest activity first, with
+  session counts), the selected project's sessions on the right.
+
 ### TUI keys
 
-| Context | Keys | Action |
-|---------|------|--------|
-| List    | type            | full-text search across **all** sessions |
-| List    | `↑`/`↓`, `ctrl+p`/`ctrl+n` | move selection |
-| List    | `pgup`/`pgdn`   | page |
-| List    | `enter`         | open session |
-| List    | `esc`           | clear search / quit |
+| Context  | Keys | Action |
+|----------|------|--------|
+| List/Proj | type           | full-text search across **all** sessions |
+| List/Proj | `tab`          | switch between list and projects view |
+| List     | `↑`/`↓`, `ctrl+p`/`ctrl+n` | move selection |
+| List     | `pgup`/`pgdn`   | page |
+| List     | `enter`         | open session |
+| List     | `esc`           | clear search / quit |
+| Projects | `←`/`→`         | switch pane (projects ↔ sessions) |
+| Projects | `↑`/`↓`         | move within the active pane |
+| Projects | `enter`         | left: into sessions · right: open chat |
+| Projects | `esc`           | clear search / quit |
 | Detail  | `↑`/`↓`, `j`/`k` | scroll |
 | Detail  | `space`, `pgup`/`pgdn` | page |
 | Detail  | `n` / `N`       | next / previous match (of the active search) |
