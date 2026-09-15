@@ -25,6 +25,7 @@ inspector_claude                       # interactive TUI
 inspector_claude --list                # list all sessions, newest first
 inspector_claude --search "kamal 2.8"  # sessions matching a query, most hits first
 inspector_claude --show <session-id>   # print one session (id, id-prefix, or path)
+inspector_claude --show <id> --conversation  # conversation only (no tool calls/thinking)
 inspector_claude --root /path/to/dir   # use a non-default transcripts root
 ```
 
@@ -40,11 +41,13 @@ inspector_claude --root /path/to/dir   # use a non-default transcripts root
 | Detail  | `↑`/`↓`, `j`/`k` | scroll |
 | Detail  | `space`, `pgup`/`pgdn` | page |
 | Detail  | `n` / `N`       | next / previous match (of the active search) |
+| Detail  | `t`             | toggle technical lines (tool calls/results/thinking) |
 | Detail  | `g` / `G`       | top / bottom |
 | Detail  | `esc` / `q`     | back to list |
 
 The active search term is highlighted inside the detail view, and `n`/`N` jump
-between its occurrences.
+between its occurrences. `t` switches between the full transcript and a
+conversation-only view that hides tool calls, tool results and thinking.
 
 ## How it works
 

@@ -30,6 +30,7 @@ func main() {
 		listFlag   = flag.Bool("list", false, "print sessions and exit (no TUI)")
 		searchFlag = flag.String("search", "", "print sessions matching query and exit (no TUI)")
 		showFlag   = flag.String("show", "", "print one session (by id or path) and exit (no TUI)")
+		convFlag   = flag.Bool("conversation", false, "with --show: hide tool calls/results/thinking")
 		versFlag   = flag.Bool("version", false, "print version and exit")
 	)
 	flag.Parse()
@@ -51,7 +52,7 @@ func main() {
 
 	switch {
 	case *showFlag != "":
-		cliShow(sessions, *showFlag)
+		cliShow(sessions, *showFlag, *convFlag)
 	case *searchFlag != "":
 		cliList(filterSessions(sessions, *searchFlag), strings.ToLower(*searchFlag))
 	case *listFlag:
@@ -99,7 +100,7 @@ func cliList(sessions []session.Session, ql string) {
 	}
 }
 
-func cliShow(sessions []session.Session, ref string) {
+func cliShow(sessions []session.Session, ref string, conversationOnly bool) {
 	s := findSession(sessions, ref)
 	if s == nil {
 		fmt.Fprintf(os.Stderr, "inspector_claude: no session matching %q\n", ref)
@@ -111,7 +112,7 @@ func cliShow(sessions []session.Session, ref string) {
 		os.Exit(1)
 	}
 	fmt.Printf("# %s\n# project: %s  branch: %s\n# %s\n\n", s.ID, s.ProjectPath, s.Branch, s.Path)
-	for _, l := range renderEntries(entries) {
+	for _, l := range lineTexts(renderEntries(entries), conversationOnly) {
 		fmt.Println(l)
 	}
 }

@@ -49,11 +49,12 @@ type model struct {
 
 	// detail state
 	dTitle   string
-	rawLines []string // unstyled, unwrapped source lines (kept to re-wrap on resize)
-	dLines   []string // unstyled, wrapped display lines
+	rawLines []Line   // tagged source lines (kept to re-wrap/re-filter cheaply)
+	dLines   []string // unstyled, wrapped display lines (after tech filter)
 	dTop     int
 	matches  []int // indices into dLines containing the query
 	matchPos int
+	hideTech bool // hide tool calls / results / thinking -> conversation only
 	err      error
 }
 
@@ -164,6 +165,10 @@ func (m model) updateDetail(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		m.jumpMatch(1)
 	case "N":
 		m.jumpMatch(-1)
+	case "t":
+		m.hideTech = !m.hideTech
+		m.rebuildDetail()
+		m.dTop = m.clampTop(m.dTop)
 	}
 	return m, nil
 }
@@ -189,7 +194,7 @@ func (m *model) rebuildDetail() {
 		width = 20
 	}
 	var wrapped []string
-	for _, l := range m.rawLines {
+	for _, l := range lineTexts(m.rawLines, m.hideTech) {
 		wrapped = append(wrapped, wrap(l, width)...)
 	}
 	m.dLines = wrapped
@@ -281,7 +286,11 @@ func (m model) viewDetail() string {
 	if len(m.matches) > 0 {
 		pos = fmt.Sprintf("  match %d/%d", m.matchPos+1, len(m.matches))
 	}
-	b.WriteString(stDim.Render(fmt.Sprintf("line %d/%d%s", m.dTop+1, len(m.dLines), pos)) + "\n")
+	viewMode := "full"
+	if m.hideTech {
+		viewMode = "conversation only"
+	}
+	b.WriteString(stDim.Render(fmt.Sprintf("line %d/%d%s  ·  %s", m.dTop+1, len(m.dLines), pos, viewMode)) + "\n")
 	b.WriteString(stDim.Render(strings.Repeat("─", m.w)) + "\n")
 
 	rows := m.detailRows()
@@ -294,7 +303,7 @@ func (m model) viewDetail() string {
 		b.WriteString("\n")
 	}
 	b.WriteString(stDim.Render(strings.Repeat("─", m.w)) + "\n")
-	b.WriteString(stDim.Render("↑↓/jk scroll · space page · n/N next/prev match · g/G top/bottom · esc back"))
+	b.WriteString(stDim.Render("↑↓/jk scroll · space page · n/N match · t tech on/off · g/G top/bottom · esc back"))
 	return b.String()
 }
 

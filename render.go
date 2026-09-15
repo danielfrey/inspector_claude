@@ -8,59 +8,89 @@ import (
 	"inspector_claude/internal/session"
 )
 
-// renderEntries turns a session's entries into display lines (unstyled). The
-// TUI wraps and highlights these; the plain-CLI `show` mode prints them as-is.
-func renderEntries(entries []session.Entry) []string {
-	var lines []string
-	add := func(ss ...string) { lines = append(lines, ss...) }
+// Line is one rendered display line, tagged by whether it belongs to the plain
+// user<->assistant conversation (Tech=false) or to the machinery around it —
+// tool calls, tool results, and Claude's thinking (Tech=true). The flag lets
+// the viewer hide the technical lines and show only the conversation.
+type Line struct {
+	Text string
+	Tech bool
+}
+
+// renderEntries turns a session's entries into tagged display lines. The TUI
+// wraps, filters and highlights these; the plain-CLI `show` mode prints them.
+func renderEntries(entries []session.Entry) []Line {
+	var lines []Line
+	conv := func(ss ...string) {
+		for _, s := range ss {
+			lines = append(lines, Line{s, false})
+		}
+	}
+	tech := func(ss ...string) {
+		for _, s := range ss {
+			lines = append(lines, Line{s, true})
+		}
+	}
 
 	for _, e := range entries {
 		if e.Message == nil {
 			continue
 		}
-		blocks := e.Message.Blocks()
-		if len(blocks) == 0 {
-			continue
-		}
-		for _, b := range blocks {
+		for _, b := range e.Message.Blocks() {
 			switch b.Type {
 			case "text":
 				if strings.TrimSpace(b.Text) == "" {
 					continue
 				}
 				if e.Type == "user" {
-					add("", "▶ YOU")
+					conv("", "▶ YOU")
 				} else {
-					add("", "● CLAUDE")
+					conv("", "● CLAUDE")
 				}
-				add(splitLines(b.Text)...)
+				conv(splitLines(b.Text)...)
 			case "thinking":
 				txt := b.PlainText()
 				if strings.TrimSpace(txt) == "" {
 					continue
 				}
-				add("", "  · thinking")
-				add(indent(splitLines(txt), "  ")...)
+				tech("", "  · thinking")
+				tech(indent(splitLines(txt), "  ")...)
 			case "tool_use":
-				add("", "  ⚙ "+b.Name+"  "+summarizeInput(b.Input))
+				tech("", "  ⚙ "+b.Name+"  "+summarizeInput(b.Input))
 			case "tool_result":
 				txt := strings.TrimRight(b.PlainText(), "\n")
 				if strings.TrimSpace(txt) == "" {
 					continue
 				}
-				add("  ⎿ result:")
-				add(indent(splitLines(truncate(txt, 4000)), "    ")...)
+				tech("  ⎿ result:")
+				tech(indent(splitLines(truncate(txt, 4000)), "    ")...)
 			}
 		}
 	}
-	if len(lines) > 0 && lines[0] == "" {
+	if len(lines) > 0 && lines[0].Text == "" {
 		lines = lines[1:]
 	}
 	return lines
 }
 
+// lineTexts flattens rendered lines to strings, optionally dropping the
+// technical ones. A leading blank left behind by filtering is trimmed.
+func lineTexts(lines []Line, hideTech bool) []string {
+	out := make([]string, 0, len(lines))
+	for _, l := range lines {
+		if hideTech && l.Tech {
+			continue
+		}
+		out = append(out, l.Text)
+	}
+	for len(out) > 0 && out[0] == "" {
+		out = out[1:]
+	}
+	return out
+}
+
 // summarizeInput renders a tool_use input compactly: prefer a "command" field
-// (Bash), else the first string value, else the raw JSON, all single-lined.
+// (Bash), else another common string field, else the raw JSON, single-lined.
 func summarizeInput(raw json.RawMessage) string {
 	if len(raw) == 0 {
 		return ""
