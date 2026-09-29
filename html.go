@@ -27,12 +27,15 @@ func writeSessionHTML(s session.Session, entries []session.Entry) (string, error
 // external assets, so it works offline and when the binary is shared).
 func renderSessionHTML(s session.Session, entries []session.Entry) string {
 	var b strings.Builder
-	title := escapeHTML(s.Project + " · " + s.ID)
+	title := escapeHTML(oneLine(s.Title()))
 	b.WriteString("<!doctype html><html><head><meta charset=\"utf-8\">")
 	b.WriteString("<meta name=\"viewport\" content=\"width=device-width, initial-scale=1\">")
 	b.WriteString("<title>" + title + "</title>\n<style>\n" + htmlStyle + "</style></head><body>\n")
-	b.WriteString("<header><h1>" + escapeHTML(s.Project) + "</h1>")
-	b.WriteString("<div class=\"meta\">" + escapeHTML(s.ID))
+	b.WriteString("<header><h1>" + title + "</h1>")
+	// Subtitle carries the project and the session id — the id is the argument
+	// for `claude --resume <id>`, so it stays visible even though the heading is
+	// now the human-readable title.
+	b.WriteString("<div class=\"meta\">" + escapeHTML(s.Project) + " · " + escapeHTML(s.ID))
 	if s.Branch != "" {
 		b.WriteString(" · " + escapeHTML(s.Branch))
 	}
