@@ -99,6 +99,13 @@ and, if you are scrolled to the bottom, tails new turns as they are written —
 so you can watch a session happening in another Claude Code window in real time.
 Press `f` to pause/resume following, `r` to reload immediately.
 
+### Source badge
+
+Each session shows how it was launched, read from the transcript's `entrypoint`
+field: **`cli`** for the Claude Code CLI, **`tw`** (orange) for the SDK/ACP
+entrypoint that drives Claude from Tidewave. The badge appears in the list, the
+projects pane, the chat header and `--list`.
+
 ## How it works
 
 Each transcript line is one JSON object with a `type` and, for turns, a

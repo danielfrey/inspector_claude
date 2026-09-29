@@ -101,7 +101,7 @@ func cliList(sessions []session.Session, ql string) {
 		if ql != "" {
 			extra = fmt.Sprintf("  (%d hits)", s.Matches(ql))
 		}
-		fmt.Printf("%s  %-18s  %3d msg%s  %s\n", date, trunc(s.Project, 18), s.MsgCount, extra, trunc(oneLine(s.Title()), 70))
+		fmt.Printf("%s  %-3s  %-18s  %3d msg%s  %s\n", date, s.Badge(), trunc(s.Project, 18), s.MsgCount, extra, trunc(oneLine(s.Title()), 70))
 		fmt.Printf("            %s\n", s.ID)
 	}
 }

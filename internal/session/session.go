@@ -28,6 +28,7 @@ type Entry struct {
 	CWD         string   `json:"cwd"`
 	GitBranch   string   `json:"gitBranch"`
 	Version     string   `json:"version"`
+	Entrypoint  string   `json:"entrypoint"` // "cli" (Claude Code) or "sdk-ts" (SDK/ACP, e.g. Tidewave)
 	IsSidechain bool     `json:"isSidechain"`
 	Summary     string   `json:"summary"` // present on type=="summary" lines
 	Message     *Message `json:"message"`
@@ -123,6 +124,7 @@ type Session struct {
 	Branch      string
 	Summary     string
 	FirstPrompt string
+	Entrypoint  string // "cli", "sdk-ts", ...
 	Start       time.Time
 	End         time.Time
 	MsgCount    int
@@ -130,6 +132,31 @@ type Session struct {
 
 	firstAny string // first user line of any kind (fallback title)
 	plain    string // lowercased concatenated text, for substring search
+}
+
+// Source is a human label for how the session was launched: "cli" (Claude Code
+// CLI) or "tidewave" (SDK/ACP entrypoint, which is how Tidewave drives Claude).
+func (s Session) Source() string {
+	switch s.Entrypoint {
+	case "sdk-ts":
+		return "tidewave"
+	case "":
+		return ""
+	default:
+		return s.Entrypoint
+	}
+}
+
+// Badge is a compact tag for the source, for table columns: "tw", "cli", "?".
+func (s Session) Badge() string {
+	switch s.Entrypoint {
+	case "sdk-ts":
+		return "tw"
+	case "":
+		return "?"
+	default:
+		return s.Entrypoint
+	}
 }
 
 // Title is the best available one-line label for the session.
@@ -230,6 +257,9 @@ func scanFile(path, dirName string) (Session, error) {
 		}
 		if s.Branch == "" && e.GitBranch != "" {
 			s.Branch = e.GitBranch
+		}
+		if s.Entrypoint == "" && e.Entrypoint != "" {
+			s.Entrypoint = e.Entrypoint
 		}
 		if e.Type == "summary" && e.Summary != "" {
 			s.Summary = e.Summary

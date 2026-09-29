@@ -229,6 +229,20 @@ func TestInChatSearchIndependent(t *testing.T) {
 	}
 }
 
+func TestSourceBadge(t *testing.T) {
+	cases := []struct{ ep, src, badge string }{
+		{"sdk-ts", "tidewave", "tw"},
+		{"cli", "cli", "cli"},
+		{"", "", "?"},
+	}
+	for _, c := range cases {
+		s := session.Session{Entrypoint: c.ep}
+		if s.Source() != c.src || s.Badge() != c.badge {
+			t.Fatalf("entrypoint %q: got source=%q badge=%q, want %q/%q", c.ep, s.Source(), s.Badge(), c.src, c.badge)
+		}
+	}
+}
+
 func TestMarkdownRendering(t *testing.T) {
 	// table detection
 	block := markdownBlock("| A | B |\n|---|---|\n| 1 | 2 |")

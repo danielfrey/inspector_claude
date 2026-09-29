@@ -58,7 +58,19 @@ var (
 	stQuote     = lipgloss.NewStyle().Foreground(cDim).Italic(true)
 	stTableHead = lipgloss.NewStyle().Bold(true)
 	stLive      = lipgloss.NewStyle().Bold(true).Foreground(cUser)
+
+	// source badges
+	stBadgeTW  = lipgloss.NewStyle().Foreground(cTool) // tidewave / sdk-ts
+	stBadgeCLI = lipgloss.NewStyle().Foreground(cDim)  // Claude Code CLI
 )
+
+// badgeStyle picks the color for a session's source badge.
+func badgeStyle(s session.Session) lipgloss.Style {
+	if s.Entrypoint == "sdk-ts" {
+		return stBadgeTW
+	}
+	return stBadgeCLI
+}
 
 type mode int
 
@@ -413,6 +425,9 @@ func (m *model) openDetail(s session.Session) {
 	m.cur = s
 	m.curPath = s.Path
 	m.dTitle = fmt.Sprintf("%s  ·  %s  ·  %s", s.Project, s.ID, s.Branch)
+	if src := s.Source(); src != "" {
+		m.dTitle += "  ·  " + src
+	}
 	m.rawLines = renderEntries(entries)
 	m.returnMode = m.mode
 	m.mode = modeDetail
@@ -652,7 +667,7 @@ func (m model) sessionColumn(rows, w int) []string {
 		if q != "" {
 			hits = fmt.Sprintf(" [%d]", s.Matches(q))
 		}
-		line := fitPlain(fmt.Sprintf("%s  %s%s", s.SortTime().Format("2006-01-02"), oneLine(s.Title()), hits), w)
+		line := fitPlain(fmt.Sprintf("%s %-3s %s%s", s.SortTime().Format("2006-01-02"), s.Badge(), oneLine(s.Title()), hits), w)
 		out = append(out, m.styleCell(line, i == m.sessCursor, 1))
 	}
 	return padCol(out, rows, w)
@@ -675,22 +690,24 @@ func (m model) renderRow(s session.Session, selected bool, q string) string {
 	if !s.SortTime().IsZero() {
 		date = s.SortTime().Format("2006-01-02")
 	}
-	hits := ""
+	badge := fmt.Sprintf("%-3s", s.Badge())
+	hitsPlain := ""
 	if q != "" {
-		hits = stHit.Render(fmt.Sprintf(" [%d]", s.Matches(q)))
+		hitsPlain = fmt.Sprintf(" [%d]", s.Matches(q))
 	}
-	meta := fmt.Sprintf("%s  %-16s %3dm", date, trunc(s.Project, 16), s.MsgCount)
+	// meta includes the badge width so the title budget stays correct
+	meta := fmt.Sprintf("%s  %-16s %3dm %s", date, trunc(s.Project, 16), s.MsgCount, badge)
 	title := oneLine(s.Title())
-	// budget the title to the remaining width
-	avail := m.w - lipgloss.Width(meta) - lipgloss.Width(stripANSI(hits)) - 4
+	avail := m.w - lipgloss.Width(meta) - len(hitsPlain) - 4
 	if avail < 10 {
 		avail = 10
 	}
-	line := fmt.Sprintf("%s  %s%s", meta, trunc(title, avail), hits)
 	if selected {
+		line := fmt.Sprintf("%s  %s%s", meta, trunc(title, avail), hitsPlain)
 		return stSel.Render(trunc(line, m.w))
 	}
-	return stDim.Render(meta) + "  " + trunc(title, avail) + hits
+	head := fmt.Sprintf("%s  %-16s %3dm ", date, trunc(s.Project, 16), s.MsgCount)
+	return stDim.Render(head) + badgeStyle(s).Render(badge) + "  " + trunc(title, avail) + stHit.Render(hitsPlain)
 }
 
 func (m model) viewDetail() string {
