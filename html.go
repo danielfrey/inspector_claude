@@ -44,6 +44,25 @@ func renderSessionHTML(s session.Session, entries []session.Entry) string {
 	}
 	b.WriteString("</div></header>\n<main>\n")
 
+	// The technical blocks (thinking / tool calls / results) surrounding a
+	// Claude turn are buffered and flushed as one group, so a single "expand
+	// all" control can open every small block of that turn at once.
+	var pending []string
+	flushTech := func() {
+		switch len(pending) {
+		case 0:
+		case 1:
+			b.WriteString(pending[0])
+		default:
+			b.WriteString("<div class=\"tech-group\">\n")
+			for _, d := range pending {
+				b.WriteString(d)
+			}
+			b.WriteString("</div>\n")
+		}
+		pending = pending[:0]
+	}
+
 	for _, e := range entries {
 		if e.Message == nil {
 			continue
@@ -54,27 +73,37 @@ func renderSessionHTML(s session.Session, entries []session.Entry) string {
 				if strings.TrimSpace(blk.Text) == "" {
 					continue
 				}
+				flushTech()
 				role, cls := "Claude", "assistant"
 				if e.Type == "user" {
 					role, cls = "You", "user"
 				}
-				b.WriteString("<section class=\"turn " + cls + "\"><div class=\"role\">" + role + "</div>\n")
+				b.WriteString("<section class=\"turn " + cls + "\"><div class=\"role\">" + role)
+				// The assistant role line carries a toggle icon on its right
+				// edge; it opens/closes every collapsible block of the group that
+				// follows this turn. Orphan buttons (no following group) are
+				// hidden by the script.
+				if cls == "assistant" {
+					b.WriteString("<button class=\"toggle-all\" type=\"button\" title=\"alle Blöcke auf-/zuklappen\" aria-label=\"alle Blöcke auf-/zuklappen\">▸</button>")
+				}
+				b.WriteString("</div>\n")
 				b.WriteString(mdToHTML(blk.Text))
 				b.WriteString("</section>\n")
 			case "thinking":
 				if txt := strings.TrimSpace(blk.PlainText()); txt != "" {
-					b.WriteString(detailsBlock("· thinking", blk.PlainText()))
+					pending = append(pending, detailsBlock("· thinking", blk.PlainText()))
 				}
 			case "tool_use":
-				b.WriteString(detailsBlock("⚙ "+escapeHTML(blk.Name), plainInput(blk.Input)))
+				pending = append(pending, detailsBlock("⚙ "+escapeHTML(blk.Name), plainInput(blk.Input)))
 			case "tool_result":
 				if txt := strings.TrimRight(blk.PlainText(), "\n"); strings.TrimSpace(txt) != "" {
-					b.WriteString(detailsBlock("⎿ result", txt))
+					pending = append(pending, detailsBlock("⎿ result", txt))
 				}
 			}
 		}
 	}
-	b.WriteString("</main>\n<footer>rendered by inspector_claude</footer>\n</body></html>")
+	flushTech()
+	b.WriteString("</main>\n<footer>rendered by inspector_claude</footer>\n" + htmlScript + "</body></html>")
 	return b.String()
 }
 
@@ -278,7 +307,7 @@ header h1{margin:0;font-size:22px;color:var(--accent)}
 .meta{color:var(--dim);font-size:13px;margin-top:4px}
 main{padding-top:16px;padding-bottom:64px}
 .turn{padding:12px 0;border-top:1px solid var(--border)}
-.turn .role{font-weight:700;font-size:13px;text-transform:uppercase;letter-spacing:.04em;margin-bottom:6px}
+.turn .role{position:relative;font-weight:700;font-size:13px;text-transform:uppercase;letter-spacing:.04em;margin-bottom:6px}
 .turn.user .role{color:var(--user)}
 .turn.assistant .role{color:var(--claude)}
 .turn p{margin:.5em 0}
@@ -294,6 +323,32 @@ th{background:var(--code-bg)}
 details.tech{margin:6px 0;color:var(--dim)}
 details.tech summary{cursor:pointer;font-size:13px}
 details.tech pre{background:var(--code-bg);padding:10px 12px;border-radius:6px;overflow-x:auto;font:12.5px/1.5 ui-monospace,Menlo,monospace;white-space:pre-wrap;word-break:break-word}
+.tech-group{margin:6px 0}
+.toggle-all{position:absolute;top:-4px;right:0;cursor:pointer;font-size:20px;line-height:1;color:var(--dim);background:none;border:none;padding:0 2px}
+.toggle-all:hover{color:var(--accent)}
 ul,ol{margin:.4em 0;padding-left:1.5em}
 footer{color:var(--dim);font-size:12px;padding-bottom:32px;text-align:center}
+`
+
+// htmlScript toggles every collapsible block inside one tech-group at once. It
+// is self-contained (no external assets) so the rendered file works offline.
+const htmlScript = `<script>
+function techGroupFor(btn){
+  var g=btn.closest('.turn').nextElementSibling;
+  return (g&&g.classList.contains('tech-group'))?g:null;
+}
+document.querySelectorAll('.toggle-all').forEach(function(btn){
+  if(!techGroupFor(btn))btn.style.display='none';
+});
+document.addEventListener('click',function(ev){
+  var btn=ev.target.closest('.toggle-all');
+  if(!btn)return;
+  var g=techGroupFor(btn);
+  if(!g)return;
+  var items=g.querySelectorAll('details.tech');
+  var open=Array.prototype.some.call(items,function(d){return !d.open;});
+  items.forEach(function(d){d.open=open;});
+  btn.textContent=open?'▾':'▸';
+});
+</script>
 `
