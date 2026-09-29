@@ -31,6 +31,7 @@ type Entry struct {
 	Entrypoint  string   `json:"entrypoint"` // "cli" (Claude Code) or "sdk-ts" (SDK/ACP, e.g. Tidewave)
 	IsSidechain bool     `json:"isSidechain"`
 	Summary     string   `json:"summary"` // present on type=="summary" lines
+	AITitle     string   `json:"aiTitle"` // present on type=="ai-title" lines
 	Message     *Message `json:"message"`
 }
 
@@ -123,6 +124,7 @@ type Session struct {
 	Project     string // basename of ProjectPath, for display
 	Branch      string
 	Summary     string
+	AITitle     string
 	FirstPrompt string
 	Entrypoint  string // "cli", "sdk-ts", ...
 	Start       time.Time
@@ -161,6 +163,9 @@ func (s Session) Badge() string {
 
 // Title is the best available one-line label for the session.
 func (s Session) Title() string {
+	if s.AITitle != "" {
+		return s.AITitle
+	}
 	if s.Summary != "" {
 		return s.Summary
 	}
@@ -263,6 +268,11 @@ func scanFile(path, dirName string) (Session, error) {
 		}
 		if e.Type == "summary" && e.Summary != "" {
 			s.Summary = e.Summary
+		}
+		// Claude Code records an auto-generated session title on type=="ai-title"
+		// lines; it can appear several times and be refined, so last-wins.
+		if e.Type == "ai-title" && e.AITitle != "" {
+			s.AITitle = e.AITitle
 		}
 		if ts := parseTime(e.Timestamp); !ts.IsZero() {
 			if s.Start.IsZero() {
