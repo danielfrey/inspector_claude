@@ -308,6 +308,7 @@ header h1{margin:0;font-size:22px;color:var(--accent)}
 main{padding-top:16px;padding-bottom:64px}
 .turn{padding:12px 0;border-top:1px solid var(--border)}
 .turn .role{position:relative;font-weight:700;font-size:13px;text-transform:uppercase;letter-spacing:.04em;margin-bottom:6px}
+.turn .role.has-toggle{cursor:pointer}
 .turn.user .role{color:var(--user)}
 .turn.assistant .role{color:var(--claude)}
 .turn p{margin:.5em 0}
@@ -337,18 +338,29 @@ function techGroupFor(btn){
   var g=btn.closest('.turn').nextElementSibling;
   return (g&&g.classList.contains('tech-group'))?g:null;
 }
-document.querySelectorAll('.toggle-all').forEach(function(btn){
-  if(!techGroupFor(btn))btn.style.display='none';
-});
-document.addEventListener('click',function(ev){
-  var btn=ev.target.closest('.toggle-all');
-  if(!btn)return;
+function toggleFor(btn){
   var g=techGroupFor(btn);
   if(!g)return;
   var items=g.querySelectorAll('details.tech');
   var open=Array.prototype.some.call(items,function(d){return !d.open;});
   items.forEach(function(d){d.open=open;});
   btn.textContent=open?'▾':'▸';
+}
+document.querySelectorAll('.toggle-all').forEach(function(btn){
+  if(techGroupFor(btn)){
+    btn.closest('.role').classList.add('has-toggle');
+  }else{
+    btn.style.display='none';
+  }
+});
+document.addEventListener('click',function(ev){
+  var btn=ev.target.closest('.toggle-all');
+  if(!btn){
+    // A click anywhere on a Claude role line toggles its group too.
+    var role=ev.target.closest('.role.has-toggle');
+    if(role)btn=role.querySelector('.toggle-all');
+  }
+  if(btn)toggleFor(btn);
 });
 </script>
 `
