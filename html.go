@@ -31,6 +31,11 @@ func renderSessionHTML(s session.Session, entries []session.Entry) string {
 	b.WriteString("<!doctype html><html><head><meta charset=\"utf-8\">")
 	b.WriteString("<meta name=\"viewport\" content=\"width=device-width, initial-scale=1\">")
 	b.WriteString("<title>" + title + "</title>\n<style>\n" + htmlStyle + "</style></head><body>\n")
+	// Floating switch (top-right, stays on scroll) that hides every technical
+	// block — thinking / tool calls / results — leaving only the conversation.
+	// Mirrors the TUI's "t" shortcut, which is also bound below.
+	b.WriteString("<button id=\"tech-switch\" type=\"button\" aria-pressed=\"true\" title=\"show/hide technical steps (press t)\">" +
+		"<span class=\"tsw-label\">⚙ Tech</span><span class=\"tsw-track\"><span class=\"tsw-knob\"></span></span></button>\n")
 	b.WriteString("<header><h1>" + title + "</h1>")
 	// Subtitle carries the project and the session id — the id is the argument
 	// for `claude --resume <id>`, so it stays visible even though the heading is
@@ -467,6 +472,15 @@ details.tech pre{background:var(--code-bg);padding:10px 12px;border-radius:6px;o
 .toggle-all:hover{color:var(--accent)}
 ul,ol{margin:.4em 0;padding-left:1.5em}
 footer{color:var(--dim);font-size:12px;padding-bottom:32px;text-align:center}
+#tech-switch{position:fixed;top:12px;right:12px;z-index:20;display:flex;align-items:center;gap:8px;padding:6px 10px;border-radius:999px;border:1px solid var(--border);background:var(--bg);color:var(--dim);font-size:12px;cursor:pointer;box-shadow:0 1px 4px rgba(0,0,0,.14)}
+#tech-switch:hover{color:var(--fg)}
+.tsw-track{position:relative;width:32px;height:18px;border-radius:999px;background:var(--accent);transition:background .15s}
+.tsw-knob{position:absolute;top:2px;left:16px;width:14px;height:14px;border-radius:50%;background:#fff;transition:left .15s;box-shadow:0 1px 2px rgba(0,0,0,.35)}
+body.hide-tech .tsw-track{background:var(--border)}
+body.hide-tech .tsw-knob{left:2px}
+body.hide-tech .tech-group,body.hide-tech details.tech,body.hide-tech .toggle-all{display:none}
+body.hide-tech .turn .role.has-toggle{cursor:default}
+@media print{#tech-switch{display:none}}
 `
 
 // htmlScript toggles every collapsible block inside one tech-group at once. It
@@ -500,5 +514,22 @@ document.addEventListener('click',function(ev){
   }
   if(btn)toggleFor(btn);
 });
+(function(){
+  var sw=document.getElementById('tech-switch'),KEY='ic_hide_tech';
+  function apply(hide){
+    document.body.classList.toggle('hide-tech',hide);
+    sw.setAttribute('aria-pressed',String(!hide));
+    try{localStorage.setItem(KEY,hide?'1':'0');}catch(e){}
+  }
+  var start=false;try{start=localStorage.getItem(KEY)==='1';}catch(e){}
+  apply(start);
+  sw.addEventListener('click',function(){apply(!document.body.classList.contains('hide-tech'));});
+  document.addEventListener('keydown',function(ev){
+    if(ev.key!=='t'||ev.metaKey||ev.ctrlKey||ev.altKey)return;
+    var el=ev.target;
+    if(el&&(el.tagName==='INPUT'||el.tagName==='TEXTAREA'||el.isContentEditable))return;
+    apply(!document.body.classList.contains('hide-tech'));
+  });
+})();
 </script>
 `
