@@ -472,10 +472,13 @@ a.toc-assistant .toc-mark{color:var(--claude)}
 main{padding-top:16px;padding-bottom:64px}
 .turn{scroll-margin-top:48px}
 .turn{padding:12px 0;border-top:1px solid var(--border)}
-.turn .role{position:relative;font-weight:700;font-size:13px;text-transform:uppercase;letter-spacing:.04em;margin-bottom:6px}
+.turn .role{position:relative;font-weight:700;font-size:13px;text-transform:uppercase;letter-spacing:.04em;margin-bottom:8px;padding:5px 10px;border-radius:6px}
 .turn .role.has-toggle{cursor:pointer}
-.turn.user .role{color:var(--user)}
+/* A soft ~10% bar behind the role line makes You/Claude jump out. For Claude it
+   marks only the always-visible answers, not intermediate narration or tech. */
+.turn.user .role{color:var(--user);background:color-mix(in srgb,var(--user) 12%,transparent)}
 .turn.assistant .role{color:var(--claude)}
+.turn.assistant.answer .role{background:color-mix(in srgb,var(--claude) 12%,transparent)}
 .turn p{margin:.5em 0}
 h1,h2,h3,h4,h5,h6{line-height:1.3}
 main h2{font-size:19px}main h3{font-size:17px}
@@ -490,7 +493,7 @@ details.tech{margin:6px 0;color:var(--dim)}
 details.tech summary{cursor:pointer;font-size:13px}
 details.tech pre{background:var(--code-bg);padding:10px 12px;border-radius:6px;overflow-x:auto;font:12.5px/1.5 ui-monospace,Menlo,monospace;white-space:pre-wrap;word-break:break-word}
 .tech-group{margin:6px 0}
-.toggle-all{position:absolute;top:-4px;right:0;cursor:pointer;font-size:20px;line-height:1;color:var(--dim);background:none;border:none;padding:0 2px}
+.toggle-all{position:absolute;top:50%;right:6px;transform:translateY(-50%);cursor:pointer;font-size:18px;line-height:1;color:var(--dim);background:none;border:none;padding:0 2px}
 .toggle-all:hover{color:var(--accent)}
 ul,ol{margin:.4em 0;padding-left:1.5em}
 footer{color:var(--dim);font-size:12px;padding-bottom:32px;text-align:center}
