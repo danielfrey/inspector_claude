@@ -42,7 +42,22 @@ func renderSessionHTML(s session.Session, entries []session.Entry) string {
 	if !s.Start.IsZero() {
 		b.WriteString(" · " + s.Start.Format("2006-01-02 15:04"))
 	}
-	b.WriteString("</div></header>\n<main>\n")
+	b.WriteString("</div></header>\n")
+
+	// The conversation body is built into its own buffer while a table of
+	// contents is collected alongside it, so the (collapsed) TOC can be emitted
+	// between the header and <main> even though its entries are only known once
+	// the whole body has been walked.
+	var body strings.Builder
+	var toc []tocEntry
+	turnN := 0
+
+	// The table of contents is a pure question/answer index, so we first mark
+	// which assistant text blocks are actual answers (the last text of a Claude
+	// turn) as opposed to intermediate narration ("Now I'll look at …") that only
+	// introduces the next tool calls; the latter are left out of the TOC.
+	isAnswer := answerTextBlocks(entries)
+	asstN := 0
 
 	// The technical blocks (thinking / tool calls / results) surrounding a
 	// Claude turn are buffered and flushed as one group, so a single "expand
@@ -52,13 +67,13 @@ func renderSessionHTML(s session.Session, entries []session.Entry) string {
 		switch len(pending) {
 		case 0:
 		case 1:
-			b.WriteString(pending[0])
+			body.WriteString(pending[0])
 		default:
-			b.WriteString("<div class=\"tech-group\">\n")
+			body.WriteString("<div class=\"tech-group\">\n")
 			for _, d := range pending {
-				b.WriteString(d)
+				body.WriteString(d)
 			}
-			b.WriteString("</div>\n")
+			body.WriteString("</div>\n")
 		}
 		pending = pending[:0]
 	}
@@ -75,20 +90,35 @@ func renderSessionHTML(s session.Session, entries []session.Entry) string {
 				}
 				flushTech()
 				role, cls := "Claude", "assistant"
+				mark := "●"
 				if e.Type == "user" {
-					role, cls = "You", "user"
+					role, cls, mark = "You", "user", "▶"
 				}
-				b.WriteString("<section class=\"turn " + cls + "\"><div class=\"role\">" + role)
+				// A TOC entry is created for every user question and for answer
+				// texts only; intermediate assistant narration is skipped. Only
+				// TOC'd sections need an anchor id to jump to.
+				inTOC := cls == "user" || isAnswer[asstN]
+				if cls == "assistant" {
+					asstN++
+				}
+				attrID := ""
+				if inTOC {
+					turnN++
+					id := fmt.Sprintf("t%d", turnN)
+					attrID = " id=\"" + id + "\""
+					toc = append(toc, tocEntry{ID: id, Kind: cls, Mark: mark, Label: tocLabel(blk.Text)})
+				}
+				body.WriteString("<section class=\"turn " + cls + "\"" + attrID + "><div class=\"role\">" + role)
 				// The assistant role line carries a toggle icon on its right
 				// edge; it opens/closes every collapsible block of the group that
 				// follows this turn. Orphan buttons (no following group) are
 				// hidden by the script.
 				if cls == "assistant" {
-					b.WriteString("<button class=\"toggle-all\" type=\"button\" title=\"alle Blöcke auf-/zuklappen\" aria-label=\"alle Blöcke auf-/zuklappen\">▸</button>")
+					body.WriteString("<button class=\"toggle-all\" type=\"button\" title=\"expand/collapse all blocks\" aria-label=\"expand/collapse all blocks\">▸</button>")
 				}
-				b.WriteString("</div>\n")
-				b.WriteString(mdToHTML(blk.Text))
-				b.WriteString("</section>\n")
+				body.WriteString("</div>\n")
+				body.WriteString(mdToHTML(blk.Text))
+				body.WriteString("</section>\n")
 			case "thinking":
 				if txt := strings.TrimSpace(blk.PlainText()); txt != "" {
 					pending = append(pending, detailsBlock("· thinking", blk.PlainText()))
@@ -103,8 +133,104 @@ func renderSessionHTML(s session.Session, entries []session.Entry) string {
 		}
 	}
 	flushTech()
+
+	b.WriteString(renderTOC(toc))
+	b.WriteString("<main>\n")
+	b.WriteString(body.String())
 	b.WriteString("</main>\n<footer>rendered by inspector_claude</footer>\n" + htmlScript + "</body></html>")
 	return b.String()
+}
+
+// tocEntry is one line of the table of contents, pointing at an anchor in the
+// body. Kind is "user" or "assistant" (drives the marker color).
+type tocEntry struct {
+	ID    string
+	Kind  string
+	Mark  string
+	Label string
+}
+
+// renderTOC emits the collapsed table of contents placed between the header and
+// the conversation. Each entry is a one-line link that jumps to its anchor.
+func renderTOC(toc []tocEntry) string {
+	if len(toc) == 0 {
+		return ""
+	}
+	var b strings.Builder
+	b.WriteString("<details class=\"toc\"><summary>Table of Contents</summary>\n<nav>\n")
+	for _, t := range toc {
+		label := t.Label
+		if label == "" {
+			label = "…"
+		}
+		b.WriteString("<a class=\"toc-item toc-" + t.Kind + "\" href=\"#" + t.ID + "\">")
+		b.WriteString("<span class=\"toc-mark\">" + escapeHTML(t.Mark) + "</span>")
+		b.WriteString("<span class=\"toc-text\">" + escapeHTML(label) + "</span></a>\n")
+	}
+	b.WriteString("</nav></details>\n")
+	return b.String()
+}
+
+// answerTextBlocks marks which assistant text blocks are answers rather than
+// intermediate narration. A Claude turn (the run of activity between two user
+// messages) usually contains several text blocks: the ones that merely announce
+// the next tool calls, and a final one that is the actual answer. The last
+// assistant text block before the next user message — or before the transcript
+// ends — is that answer. The returned set is keyed by the block's ordinal among
+// all non-empty assistant text blocks, in document order.
+func answerTextBlocks(entries []session.Entry) map[int]bool {
+	answers := map[int]bool{}
+	asstN := 0 // ordinal of the next assistant text block
+	last := -1 // ordinal of the last assistant text seen in the current turn
+	closeTurn := func() {
+		if last >= 0 {
+			answers[last] = true
+			last = -1
+		}
+	}
+	for _, e := range entries {
+		if e.Message == nil {
+			continue
+		}
+		for _, blk := range e.Message.Blocks() {
+			if blk.Type != "text" || strings.TrimSpace(blk.Text) == "" {
+				continue
+			}
+			if e.Type == "user" {
+				closeTurn() // a user message ends the current Claude turn
+				continue
+			}
+			last = asstN
+			asstN++
+		}
+	}
+	closeTurn()
+	return answers
+}
+
+// tocLabel derives a one-line TOC label from a turn's markdown text: the first
+// non-empty line, with heading/quote/emphasis markers stripped and clipped.
+func tocLabel(text string) string {
+	for _, ln := range strings.Split(text, "\n") {
+		ln = strings.TrimSpace(ln)
+		if ln == "" {
+			continue
+		}
+		ln = oneLine(stripMarkers(strings.TrimLeft(ln, "#> ")))
+		if ln != "" {
+			return clip(ln, 100)
+		}
+	}
+	return ""
+}
+
+// clip shortens s to at most n runes, appending an ellipsis when it truncates.
+func clip(s string, n int) string {
+	r := []rune(s)
+	if len(r) <= n {
+		return s
+	}
+	return strings.TrimRight(string(r[:n]), " ") + "…"
 }
 
 func plainInput(raw []byte) string {
@@ -300,12 +426,24 @@ func afterNumber(s string) string {
 const htmlStyle = `:root{--bg:#ffffff;--fg:#1f2328;--dim:#6a6a6a;--accent:#0059b3;--user:#0a7d1a;--claude:#8250df;--code-bg:#f2f2f5;--border:#d8dee4}
 @media(prefers-color-scheme:dark){:root{--bg:#0f1115;--fg:#e6e6e6;--dim:#9aa0a6;--accent:#6cb6ff;--user:#7ee787;--claude:#c297ff;--code-bg:#1b1f27;--border:#333a42}}
 *{box-sizing:border-box}
+html{scroll-behavior:smooth}
 body{margin:0;background:var(--bg);color:var(--fg);font:16px/1.6 -apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,Helvetica,Arial,sans-serif}
 header,main,footer{max-width:820px;margin:0 auto;padding:0 24px}
 header{padding-top:32px}
 header h1{margin:0;font-size:22px;color:var(--accent)}
 .meta{color:var(--dim);font-size:13px;margin-top:4px}
+details.toc{max-width:820px;margin:14px auto 0;padding:0 24px}
+details.toc>summary{cursor:pointer;font-size:13px;font-weight:600;letter-spacing:.04em;text-transform:uppercase;color:var(--dim)}
+details.toc>summary:hover{color:var(--accent)}
+.toc nav{margin-top:8px;display:flex;flex-direction:column;gap:1px}
+a.toc-item{display:flex;align-items:baseline;gap:8px;min-width:0;padding:2px 6px;border-radius:5px;color:var(--fg);text-decoration:none;font-size:13.5px;line-height:1.5}
+a.toc-item:hover{background:var(--code-bg)}
+.toc-mark{flex:0 0 1.1em;text-align:center;font-size:11px}
+.toc-text{overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+a.toc-user .toc-mark{color:var(--user)}
+a.toc-assistant .toc-mark{color:var(--claude)}
 main{padding-top:16px;padding-bottom:64px}
+.turn{scroll-margin-top:12px}
 .turn{padding:12px 0;border-top:1px solid var(--border)}
 .turn .role{position:relative;font-weight:700;font-size:13px;text-transform:uppercase;letter-spacing:.04em;margin-bottom:6px}
 .turn .role.has-toggle{cursor:pointer}
