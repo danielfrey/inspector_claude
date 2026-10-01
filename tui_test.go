@@ -224,6 +224,60 @@ func TestJumpQA(t *testing.T) {
 	}
 }
 
+func TestTOCView(t *testing.T) {
+	entry := func(typ, content string) session.Entry {
+		return session.Entry{Type: typ, Message: &session.Message{Role: typ, Content: []byte(content)}}
+	}
+	entries := []session.Entry{
+		entry("user", `[{"type":"text","text":"question one"}]`),
+		entry("assistant", `[{"type":"text","text":"narration"}]`),
+		entry("assistant", `[{"type":"tool_use","name":"Bash","input":{"command":"x"}}]`),
+		entry("assistant", `[{"type":"text","text":"answer one"}]`),
+		entry("user", `[{"type":"text","text":"question two"}]`),
+		entry("assistant", `[{"type":"text","text":"answer two"}]`),
+	}
+	m := model{w: 100, h: 6}
+	m.rawLines = renderEntries(entries)
+	m.rebuildDetail() // default level 0
+
+	m.buildTOC()
+	if len(m.toc) != 4 {
+		t.Fatalf("expected 4 TOC entries, got %d", len(m.toc))
+	}
+	wantUser := []bool{true, false, true, false}
+	wantSub := []string{"question one", "answer one", "question two", "answer two"}
+	for i, e := range m.toc {
+		if e.user != wantUser[i] {
+			t.Fatalf("entry %d user=%v want %v", i, e.user, wantUser[i])
+		}
+		if !strings.Contains(e.label, wantSub[i]) {
+			t.Fatalf("entry %d label %q must contain %q", i, e.label, wantSub[i])
+		}
+	}
+
+	// Pressing "c" while on the last Q&A preselects that TOC entry.
+	m.dTop = m.toc[3].line
+	m.mode = modeDetail
+	cKey := tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'c'}}
+	m = drive(m, cKey)
+	if m.mode != modeTOC {
+		t.Fatalf("expected modeTOC after c, got %d", m.mode)
+	}
+	if m.tocCursor != 3 {
+		t.Fatalf("expected preselected cursor 3, got %d", m.tocCursor)
+	}
+
+	// Selecting a different entry and pressing enter jumps there and returns.
+	m.tocCursor = 1
+	m = drive(m, key(tea.KeyEnter))
+	if m.mode != modeDetail {
+		t.Fatalf("expected modeDetail after enter, got %d", m.mode)
+	}
+	if m.dTop != m.clampTop(m.toc[1].line) {
+		t.Fatalf("enter jump: dTop=%d want=%d", m.dTop, m.clampTop(m.toc[1].line))
+	}
+}
+
 func TestLiveFollow(t *testing.T) {
 	dir := filepath.Join(t.TempDir(), "projects", "-tmp-live")
 	if err := os.MkdirAll(dir, 0755); err != nil {

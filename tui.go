@@ -78,7 +78,17 @@ const (
 	modeList     mode = iota // flat chronological list across all projects
 	modeProjects             // two-pane: projects left, that project's sessions right
 	modeDetail               // one session's chat
+	modeTOC                  // table of contents (questions + answers) of the open session
 )
+
+// tocLine is one navigable line of the detail-view table of contents: a
+// question or a final answer, with the snippet shown and the dLines index to
+// jump to.
+type tocLine struct {
+	label string
+	line  int  // index into dLines
+	user  bool // true = question, false = Claude answer
+}
 
 // projGroup is the sessions of one project (directory), for the projects view.
 type projGroup struct {
@@ -110,9 +120,11 @@ type model struct {
 	dTop        int
 	matches     []int // indices into dLines containing the detail query
 	matchPos    int
-	techLevel   int    // detail level: 0 = questions + answers, 1 = + narration, 2 = + tech
-	returnMode  mode   // browse mode to return to when leaving detail
-	detailQuery string // in-chat search term (independent of the global search)
+	techLevel   int       // detail level: 0 = questions + answers, 1 = + narration, 2 = + tech
+	toc         []tocLine // table of contents for the open session (built on entering modeTOC)
+	tocCursor   int       // selected entry in the TOC view
+	returnMode  mode      // browse mode to return to when leaving detail
+	detailQuery string    // in-chat search term (independent of the global search)
 	dinput      textinput.Model
 	isearch     bool   // in-chat search prompt is active
 	isearchPrev string // detailQuery to restore if the in-chat search is cancelled
@@ -202,6 +214,8 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		switch m.mode {
 		case modeDetail:
 			return m.updateDetail(msg)
+		case modeTOC:
+			return m.updateTOC(msg)
 		case modeProjects:
 			return m.updateProjects(msg)
 		default:
@@ -373,6 +387,15 @@ func (m model) updateDetail(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		m.jumpQA(1) // next question/answer (n/N are taken by search)
 	case "shift+up":
 		m.jumpQA(-1)
+	case "c":
+		m.buildTOC()
+		if cur, _ := m.qaPos(); cur > 0 {
+			m.tocCursor = cur - 1 // preselect the Q&A we're currently on
+		} else {
+			m.tocCursor = 0
+		}
+		m.mode = modeTOC
+		return m, nil
 	case "t":
 		m.techLevel = (m.techLevel + 1) % 3
 		m.rebuildDetail()
@@ -609,6 +632,108 @@ func (m *model) jumpQA(dir int) {
 	}
 }
 
+// buildTOC collects the question/answer entries of the current display lines
+// into the TOC (in order), each pointing back at its dLines index. The label is
+// the first non-empty line following the role header.
+func (m *model) buildTOC() {
+	var items []tocLine
+	for i := 0; i < len(m.dLines); i++ {
+		if !m.isQAAnchor(i) {
+			continue
+		}
+		snip := ""
+		for j := i + 1; j < len(m.dLines); j++ {
+			if m.isQAAnchor(j) {
+				break
+			}
+			if s := strings.TrimSpace(stripMarkers(m.dLines[j].Text)); s != "" {
+				snip = s
+				break
+			}
+		}
+		if snip == "" {
+			snip = "…"
+		}
+		items = append(items, tocLine{label: snip, line: i, user: m.dLines[i].Kind == kHeaderYou})
+	}
+	m.toc = items
+}
+
+// updateTOC drives the table-of-contents view: move the cursor, jump to the
+// selected question/answer on enter, or return to the chat with c/esc.
+func (m model) updateTOC(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
+	last := len(m.toc) - 1
+	switch msg.String() {
+	case "ctrl+c":
+		return m, tea.Quit
+	case "esc", "q", "c", "left", "h":
+		m.mode = modeDetail
+		return m, nil
+	case "up", "k", "ctrl+p":
+		if m.tocCursor > 0 {
+			m.tocCursor--
+		}
+	case "down", "j", "ctrl+n":
+		if m.tocCursor < last {
+			m.tocCursor++
+		}
+	case "g", "home":
+		m.tocCursor = 0
+	case "G", "end":
+		if last >= 0 {
+			m.tocCursor = last
+		}
+	case "enter", "right", "l", " ":
+		if last >= 0 {
+			m.dTop = m.clampTop(m.toc[m.tocCursor].line)
+		}
+		m.mode = modeDetail
+		return m, nil
+	}
+	return m, nil
+}
+
+func (m model) viewTOC() string {
+	var b strings.Builder
+	cur := 0
+	if len(m.toc) > 0 {
+		cur = m.tocCursor + 1
+	}
+	b.WriteString(stTitle.Render(trunc(m.dTitle, m.w)) + "\n")
+	b.WriteString(stDim.Render(fmt.Sprintf("Table of Contents  ·  %d/%d", cur, len(m.toc))) + "\n")
+	b.WriteString(stDim.Render(strings.Repeat("─", m.w)) + "\n")
+
+	rows := m.detailRows()
+	top := 0
+	if m.tocCursor >= rows {
+		top = m.tocCursor - rows + 1
+	}
+	end := min(top+rows, len(m.toc))
+	for i := top; i < end; i++ {
+		it := m.toc[i]
+		marker := "●"
+		if it.user {
+			marker = "▶"
+		}
+		if i == m.tocCursor {
+			b.WriteString(stSel.Render(fitPlain(marker+" "+it.label, m.w)))
+		} else {
+			mst := stClaudeHdr
+			if it.user {
+				mst = stUserHdr
+			}
+			b.WriteString(mst.Render(marker) + " " + stDim.Render(trunc(it.label, m.w-2)))
+		}
+		b.WriteString("\n")
+	}
+	for i := end; i < top+rows; i++ {
+		b.WriteString("\n")
+	}
+	b.WriteString(stDim.Render(strings.Repeat("─", m.w)) + "\n")
+	b.WriteString(stDim.Render("↑↓/jk select · enter jump · g/G top/bottom · c/esc back"))
+	return b.String()
+}
+
 // --- view ------------------------------------------------------------------
 
 func (m model) View() string {
@@ -618,6 +743,8 @@ func (m model) View() string {
 	switch m.mode {
 	case modeDetail:
 		return m.viewDetail()
+	case modeTOC:
+		return m.viewTOC()
 	case modeProjects:
 		return m.viewProjects()
 	default:
@@ -796,7 +923,7 @@ func (m model) viewDetail() string {
 	if m.isearch {
 		b.WriteString(m.dinput.View())
 	} else {
-		b.WriteString(stDim.Render("↑↓/jk scroll · ⇧↑↓ Q&A · / search · n/N match · t tech · f follow · ^o browser · esc back"))
+		b.WriteString(stDim.Render("↑↓/jk scroll · ⇧↑↓ Q&A · c toc · / search · n/N match · t tech · f follow · ^o browser · esc back"))
 	}
 	return b.String()
 }
