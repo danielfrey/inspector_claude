@@ -96,13 +96,13 @@ func TestProjectsViewNavigation(t *testing.T) {
 
 func TestConversationFilter(t *testing.T) {
 	lines := []Line{
-		{"▶ YOU", kHeaderYou},
-		{"hello", kText},
-		{"  ⚙ Bash  echo hi", kTool},
-		{"  ⎿ result:", kTool},
-		{"    hi", kTool},
-		{"● CLAUDE", kHeaderClaude},
-		{"world", kText},
+		{Text: "▶ YOU", Kind: kHeaderYou},
+		{Text: "hello", Kind: kText},
+		{Text: "  ⚙ Bash  echo hi", Kind: kTool},
+		{Text: "  ⎿ result:", Kind: kTool},
+		{Text: "    hi", Kind: kTool},
+		{Text: "● CLAUDE", Kind: kHeaderClaude},
+		{Text: "world", Kind: kText},
 	}
 	full := lineTexts(lines, false)
 	conv := lineTexts(lines, true)
@@ -116,6 +116,111 @@ func TestConversationFilter(t *testing.T) {
 		if strings.HasPrefix(l, "  ⚙") || strings.HasPrefix(l, "  ⎿") {
 			t.Fatalf("technical line leaked into conversation view: %q", l)
 		}
+	}
+}
+
+func TestDetailLevels(t *testing.T) {
+	entry := func(typ, content string) session.Entry {
+		return session.Entry{Type: typ, Message: &session.Message{Role: typ, Content: []byte(content)}}
+	}
+	entries := []session.Entry{
+		entry("user", `[{"type":"text","text":"my question"}]`),
+		entry("assistant", `[{"type":"text","text":"NARRATION let me look"}]`),
+		entry("assistant", `[{"type":"tool_use","name":"Bash","input":{"command":"echo hi"}}]`),
+		entry("assistant", `[{"type":"text","text":"ANSWER here it is"}]`),
+	}
+
+	m := model{w: 100}
+	m.rawLines = renderEntries(entries)
+
+	joined := func() string {
+		var sb strings.Builder
+		for _, l := range m.dLines {
+			sb.WriteString(l.Text)
+			sb.WriteByte('\n')
+		}
+		return sb.String()
+	}
+
+	// Level 0: only questions + final answers.
+	m.techLevel = 0
+	m.rebuildDetail()
+	s0 := joined()
+	if !strings.Contains(s0, "my question") || !strings.Contains(s0, "ANSWER") {
+		t.Fatalf("level 0 must keep question and answer, got:\n%s", s0)
+	}
+	if strings.Contains(s0, "NARRATION") || strings.Contains(s0, "⚙") {
+		t.Fatalf("level 0 must drop narration and tech, got:\n%s", s0)
+	}
+
+	// Level 1: + narration, still no tech.
+	m.techLevel = 1
+	m.rebuildDetail()
+	s1 := joined()
+	if !strings.Contains(s1, "NARRATION") {
+		t.Fatalf("level 1 must show narration, got:\n%s", s1)
+	}
+	if strings.Contains(s1, "⚙") {
+		t.Fatalf("level 1 must still hide tech, got:\n%s", s1)
+	}
+
+	// Level 2: everything, including the tool call.
+	m.techLevel = 2
+	m.rebuildDetail()
+	s2 := joined()
+	if !strings.Contains(s2, "⚙") || !strings.Contains(s2, "NARRATION") {
+		t.Fatalf("level 2 must show tech and narration, got:\n%s", s2)
+	}
+}
+
+func TestJumpQA(t *testing.T) {
+	entry := func(typ, content string) session.Entry {
+		return session.Entry{Type: typ, Message: &session.Message{Role: typ, Content: []byte(content)}}
+	}
+	entries := []session.Entry{
+		entry("user", `[{"type":"text","text":"question one"}]`),
+		entry("assistant", `[{"type":"text","text":"narration"}]`),
+		entry("assistant", `[{"type":"tool_use","name":"Bash","input":{"command":"x"}}]`),
+		entry("assistant", `[{"type":"text","text":"answer one"}]`),
+		entry("user", `[{"type":"text","text":"question two"}]`),
+		entry("assistant", `[{"type":"text","text":"answer two"}]`),
+	}
+
+	// A short viewport (detailRows small) keeps clampTop from collapsing every
+	// target to 0, so distinct anchor positions survive.
+	m := model{w: 100, h: 6}
+	m.rawLines = renderEntries(entries)
+	m.techLevel = 2 // narration + tech present, so anchors must skip narration
+	m.rebuildDetail()
+
+	// Collect the anchor indices jumpQA should visit, in order.
+	var anchors []int
+	for i := range m.dLines {
+		if m.isQAAnchor(i) {
+			anchors = append(anchors, i)
+		}
+	}
+	if len(anchors) != 4 { // 2 questions + 2 answers, not the narration header
+		t.Fatalf("expected 4 Q&A anchors, got %d", len(anchors))
+	}
+
+	m.dTop = 0
+	for step, want := range anchors[1:] { // forward from the first anchor
+		m.jumpQA(1)
+		if m.dTop != m.clampTop(want) {
+			t.Fatalf("forward jump %d: dTop=%d want=%d", step, m.dTop, m.clampTop(want))
+		}
+	}
+	// At the end, another forward jump stays put (no wrap).
+	last := m.dTop
+	m.jumpQA(1)
+	if m.dTop != last {
+		t.Fatalf("forward jump past end should clamp, got %d want %d", m.dTop, last)
+	}
+	// Backward returns to the first anchor.
+	m.jumpQA(-1)
+	if m.dTop != m.clampTop(anchors[2]) {
+		t.Fatalf("backward jump: dTop=%d want=%d", m.dTop, m.clampTop(anchors[2]))
 	}
 }
 

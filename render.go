@@ -27,17 +27,22 @@ const (
 func (k lineKind) tech() bool { return k == kThinking || k == kTool }
 
 // Line is one rendered display line plus its kind. The kind drives styling
-// (in the TUI) and the conversation-only filter (hide technical lines).
+// (in the TUI) and the conversation-only filter (hide technical lines). Step
+// marks lines that belong to intermediate Claude narration (not a final
+// answer), so the TUI's most condensed detail level can drop them.
 type Line struct {
 	Text string
 	Kind lineKind
+	Step bool
 }
 
 // renderEntries turns a session's entries into tagged display lines.
 func renderEntries(entries []session.Entry) []Line {
+	isAnswer := answerTextBlocks(entries)
+	asstN := 0
 	var lines []Line
 	add := func(ss []Line) { lines = append(lines, ss...) }
-	one := func(text string, k lineKind) { lines = append(lines, Line{text, k}) }
+	one := func(text string, k lineKind) { lines = append(lines, Line{Text: text, Kind: k}) }
 
 	for _, e := range entries {
 		if e.Message == nil {
@@ -52,11 +57,23 @@ func renderEntries(entries []session.Entry) []Line {
 				if e.Type == "user" {
 					one("", kText)
 					one("▶ YOU", kHeaderYou)
+					add(markdownBlock(b.Text))
 				} else {
+					// A Claude text block is either a final answer or intermediate
+					// narration; narration lines are tagged Step so the TUI's most
+					// condensed level can hide them (mirrors the HTML view).
+					step := !isAnswer[asstN]
+					asstN++
+					start := len(lines)
 					one("", kText)
 					one("● CLAUDE", kHeaderClaude)
+					add(markdownBlock(b.Text))
+					if step {
+						for i := start; i < len(lines); i++ {
+							lines[i].Step = true
+						}
+					}
 				}
-				add(markdownBlock(b.Text))
 			case "thinking":
 				txt := b.PlainText()
 				if strings.TrimSpace(txt) == "" {
@@ -102,7 +119,7 @@ func markdownBlock(text string) []Line {
 			continue // drop the fence markers themselves
 		}
 		if inFence {
-			out = append(out, Line{line, kCode})
+			out = append(out, Line{Text: line, Kind: kCode})
 			continue
 		}
 		if strings.Contains(line, "|") && i+1 < len(src) && isTableSep(src[i+1]) {
@@ -111,7 +128,7 @@ func markdownBlock(text string) []Line {
 			i += consumed - 1
 			continue
 		}
-		out = append(out, Line{line, kText})
+		out = append(out, Line{Text: line, Kind: kText})
 	}
 	return out
 }
@@ -184,11 +201,11 @@ func buildTable(src []string) ([]Line, int) {
 	}
 
 	out := []Line{
-		{pad(header), kTableHead},
-		{strings.Join(sepParts, "─┼─"), kTableSep},
+		{Text: pad(header), Kind: kTableHead},
+		{Text: strings.Join(sepParts, "─┼─"), Kind: kTableSep},
 	}
 	for _, r := range rows {
-		out = append(out, Line{pad(r), kTableRow})
+		out = append(out, Line{Text: pad(r), Kind: kTableRow})
 	}
 	return out, consumed
 }

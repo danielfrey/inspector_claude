@@ -110,7 +110,7 @@ type model struct {
 	dTop        int
 	matches     []int // indices into dLines containing the detail query
 	matchPos    int
-	hideTech    bool   // hide tool calls / results / thinking -> conversation only
+	techLevel   int    // detail level: 0 = questions + answers, 1 = + narration, 2 = + tech
 	returnMode  mode   // browse mode to return to when leaving detail
 	detailQuery string // in-chat search term (independent of the global search)
 	dinput      textinput.Model
@@ -369,8 +369,12 @@ func (m model) updateDetail(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		m.jumpMatch(1)
 	case "N":
 		m.jumpMatch(-1)
+	case "shift+down":
+		m.jumpQA(1) // next question/answer (n/N are taken by search)
+	case "shift+up":
+		m.jumpQA(-1)
 	case "t":
-		m.hideTech = !m.hideTech
+		m.techLevel = (m.techLevel + 1) % 3
 		m.rebuildDetail()
 		m.dTop = m.clampTop(m.dTop)
 	case "r":
@@ -450,15 +454,20 @@ func (m *model) rebuildDetail() {
 	}
 	var out []Line
 	for _, l := range m.rawLines {
-		if m.hideTech && l.Kind.tech() {
+		// Detail levels: 0 hides tech and intermediate narration, 1 hides only
+		// tech, 2 shows everything.
+		if m.techLevel <= 1 && l.Kind.tech() {
+			continue
+		}
+		if m.techLevel == 0 && l.Step {
 			continue
 		}
 		switch l.Kind {
 		case kCode, kTableHead, kTableRow, kTableSep:
-			out = append(out, Line{fitPlain(l.Text, width), l.Kind})
+			out = append(out, Line{Text: fitPlain(l.Text, width), Kind: l.Kind, Step: l.Step})
 		default:
 			for _, w := range wrap(l.Text, width) {
-				out = append(out, Line{w, l.Kind})
+				out = append(out, Line{Text: w, Kind: l.Kind, Step: l.Step})
 			}
 		}
 	}
@@ -555,6 +564,49 @@ func (m *model) jumpMatch(dir int) {
 	}
 	m.matchPos = (m.matchPos + dir + len(m.matches)) % len(m.matches)
 	m.dTop = m.clampTop(m.matches[m.matchPos])
+}
+
+// isQAAnchor reports whether display line i is a question or a final-answer role
+// header — the colored lines the HTML view lets you jump between.
+func (m *model) isQAAnchor(i int) bool {
+	l := m.dLines[i]
+	return l.Kind == kHeaderYou || (l.Kind == kHeaderClaude && !l.Step)
+}
+
+// qaPos returns the current question/answer position and the total count, for
+// the status bar (mirrors the HTML "Pos" readout). "Current" is the last anchor
+// at or above the top of the viewport.
+func (m *model) qaPos() (cur, total int) {
+	for i := range m.dLines {
+		if !m.isQAAnchor(i) {
+			continue
+		}
+		total++
+		if i <= m.dTop {
+			cur = total
+		}
+	}
+	return cur, total
+}
+
+// jumpQA scrolls to the next (dir>0) or previous (dir<0) question/answer,
+// bringing its role header to the top. It clamps at the ends (no wrap).
+func (m *model) jumpQA(dir int) {
+	if dir > 0 {
+		for i := m.dTop + 1; i < len(m.dLines); i++ {
+			if m.isQAAnchor(i) {
+				m.dTop = m.clampTop(i)
+				return
+			}
+		}
+		return
+	}
+	for i := m.dTop - 1; i >= 0; i-- {
+		if m.isQAAnchor(i) {
+			m.dTop = m.clampTop(i)
+			return
+		}
+	}
 }
 
 // --- view ------------------------------------------------------------------
@@ -713,15 +765,13 @@ func (m model) renderRow(s session.Session, selected bool, q string) string {
 func (m model) viewDetail() string {
 	var b strings.Builder
 	b.WriteString(stTitle.Render(trunc(m.dTitle, m.w)) + "\n")
-	pos := ""
+	match := ""
 	if len(m.matches) > 0 {
-		pos = fmt.Sprintf("  match %d/%d", m.matchPos+1, len(m.matches))
+		match = fmt.Sprintf("  match %d/%d", m.matchPos+1, len(m.matches))
 	}
-	viewMode := "full"
-	if m.hideTech {
-		viewMode = "conversation only"
-	}
-	status := stDim.Render(fmt.Sprintf("line %d/%d%s  ·  %s  ·  ", m.dTop+1, len(m.dLines), pos, viewMode))
+	qcur, qtot := m.qaPos()
+	viewMode := [...]string{"Q&A", "+ narration", "full"}[m.techLevel]
+	status := stDim.Render(fmt.Sprintf("line %d/%d  ·  pos %d/%d%s  ·  tech %d/3 %s  ·  ", m.dTop+1, len(m.dLines), qcur, qtot, match, m.techLevel+1, viewMode))
 	if m.follow {
 		status += stLive.Render("● live")
 	} else {
@@ -746,7 +796,7 @@ func (m model) viewDetail() string {
 	if m.isearch {
 		b.WriteString(m.dinput.View())
 	} else {
-		b.WriteString(stDim.Render("↑↓/jk scroll · / search · n/N match · t tech · f follow · ^o browser · esc back"))
+		b.WriteString(stDim.Render("↑↓/jk scroll · ⇧↑↓ Q&A · / search · n/N match · t tech · f follow · ^o browser · esc back"))
 	}
 	return b.String()
 }

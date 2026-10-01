@@ -37,7 +37,12 @@ func renderSessionHTML(s session.Session, entries []session.Entry) string {
 	// three detail levels for the Claude content; the active one is highlighted,
 	// and the "t" key cycles through them (mirrors the TUI's "t" shortcut):
 	//   0 = questions + answers   1 = + intermediate steps   2 = + tool calls
-	b.WriteString("<div id=\"toolbar\"><span class=\"tb-label\">Tech</span>" +
+	// The "Pos" readout shows the current question/answer (n / shift+n to move).
+	b.WriteString("<div id=\"toolbar\">" +
+		"<span class=\"tb-label\">Pos</span>" +
+		"<span id=\"nav-pos\" class=\"tb-pos\" title=\"jump to next / previous (n / shift+n)\">–</span>" +
+		"<span class=\"tb-sep\"></span>" +
+		"<span class=\"tb-label\">Tech</span>" +
 		"<div class=\"tb-states\" role=\"group\" aria-label=\"detail level (press t to cycle)\">" +
 		"<button class=\"tb-state\" type=\"button\" data-state=\"0\" title=\"questions + answers\">0</button>" +
 		"<button class=\"tb-state\" type=\"button\" data-state=\"1\" title=\"+ intermediate steps\">1</button>" +
@@ -499,6 +504,8 @@ ul,ol{margin:.4em 0;padding-left:1.5em}
 footer{color:var(--dim);font-size:12px;padding-bottom:32px;text-align:center}
 #toolbar{position:fixed;top:0;left:0;right:0;z-index:30;display:flex;align-items:center;justify-content:flex-end;gap:8px;height:38px;padding:0 16px;background:var(--bar);backdrop-filter:blur(8px);-webkit-backdrop-filter:blur(8px);border-bottom:1px solid var(--border)}
 .tb-label{color:var(--dim);font-size:12px;text-transform:uppercase;letter-spacing:.04em}
+.tb-pos{min-width:34px;height:22px;display:inline-flex;align-items:center;justify-content:center;padding:0 6px;border:1px solid var(--border);border-radius:5px;background:var(--bg);color:var(--fg);font:12px/1 ui-monospace,Menlo,monospace}
+.tb-sep{width:1px;height:18px;background:var(--border)}
 .tb-states{display:flex;gap:4px}
 .tb-state{width:24px;height:22px;border:1px solid var(--border);border-radius:5px;background:var(--bg);color:var(--dim);font:12px/1 ui-monospace,Menlo,monospace;cursor:pointer;padding:0}
 .tb-state:hover{color:var(--fg)}
@@ -563,6 +570,42 @@ document.addEventListener('click',function(ev){
     if(el&&(el.tagName==='INPUT'||el.tagName==='TEXTAREA'||el.isContentEditable))return;
     apply(state+1);
   });
+})();
+(function(){
+  // Jump between the colored role lines (questions + answers). These are always
+  // visible in every detail level, so the list is stable. "n" goes forward,
+  // "shift+n" back; the "Pos" readout mirrors the current one while scrolling.
+  var pos=document.getElementById('nav-pos');
+  if(!pos)return;
+  var els=Array.prototype.slice.call(document.querySelectorAll('.turn.user,.turn.assistant.answer'));
+  if(!els.length){pos.textContent='0/0';return;}
+  var LINE=60,lock=0,ticking=false;
+  function current(){
+    var idx=0;
+    for(var i=0;i<els.length;i++){
+      if(els[i].getBoundingClientRect().top<=LINE)idx=i;else break;
+    }
+    return idx;
+  }
+  function show(i){pos.textContent=(i+1)+'/'+els.length;}
+  function go(dir){
+    var i=Math.max(0,Math.min(els.length-1,current()+dir));
+    lock=Date.now()+700; // ignore the ensuing smooth-scroll churn
+    els[i].scrollIntoView({behavior:'smooth',block:'start'});
+    show(i);
+  }
+  window.addEventListener('scroll',function(){
+    if(ticking)return;ticking=true;
+    requestAnimationFrame(function(){ticking=false;if(Date.now()<lock)return;show(current());});
+  },{passive:true});
+  document.addEventListener('keydown',function(ev){
+    if(ev.metaKey||ev.ctrlKey||ev.altKey||ev.key.toLowerCase()!=='n')return;
+    var el=ev.target;
+    if(el&&(el.tagName==='INPUT'||el.tagName==='TEXTAREA'||el.isContentEditable))return;
+    ev.preventDefault();
+    go(ev.shiftKey?-1:1);
+  });
+  show(current());
 })();
 </script>
 `
