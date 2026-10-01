@@ -30,12 +30,19 @@ func renderSessionHTML(s session.Session, entries []session.Entry) string {
 	title := escapeHTML(oneLine(s.Title()))
 	b.WriteString("<!doctype html><html><head><meta charset=\"utf-8\">")
 	b.WriteString("<meta name=\"viewport\" content=\"width=device-width, initial-scale=1\">")
-	b.WriteString("<title>" + title + "</title>\n<style>\n" + htmlStyle + "</style></head><body>\n")
-	// Floating switch (top-right, stays on scroll) that hides every technical
-	// block — thinking / tool calls / results — leaving only the conversation.
-	// Mirrors the TUI's "t" shortcut, which is also bound below.
-	b.WriteString("<button id=\"tech-switch\" type=\"button\" aria-pressed=\"true\" title=\"show/hide technical steps (press t)\">" +
-		"<span class=\"tsw-label\">⚙ Tech</span><span class=\"tsw-track\"><span class=\"tsw-knob\"></span></span></button>\n")
+	// The body carries the initial detail level as a class (tech-0), so the
+	// document renders correctly even before the script runs / without JS.
+	b.WriteString("<title>" + title + "</title>\n<style>\n" + htmlStyle + "</style></head><body class=\"tech-0\">\n")
+	// A fixed, semi-transparent toolbar above the title. On the right it offers
+	// three detail levels for the Claude content; the active one is highlighted,
+	// and the "t" key cycles through them (mirrors the TUI's "t" shortcut):
+	//   0 = questions + answers   1 = + intermediate steps   2 = + tool calls
+	b.WriteString("<div id=\"toolbar\"><span class=\"tb-label\">Tech</span>" +
+		"<div class=\"tb-states\" role=\"group\" aria-label=\"detail level (press t to cycle)\">" +
+		"<button class=\"tb-state\" type=\"button\" data-state=\"0\" title=\"questions + answers\">0</button>" +
+		"<button class=\"tb-state\" type=\"button\" data-state=\"1\" title=\"+ intermediate steps\">1</button>" +
+		"<button class=\"tb-state\" type=\"button\" data-state=\"2\" title=\"+ tool calls &amp; results\">2</button>" +
+		"</div></div>\n")
 	b.WriteString("<header><h1>" + title + "</h1>")
 	// Subtitle carries the project and the session id — the id is the argument
 	// for `claude --resume <id>`, so it stays visible even though the heading is
@@ -99,12 +106,25 @@ func renderSessionHTML(s session.Session, entries []session.Entry) string {
 				if e.Type == "user" {
 					role, cls, mark = "You", "user", "▶"
 				}
-				// A TOC entry is created for every user question and for answer
-				// texts only; intermediate assistant narration is skipped. Only
-				// TOC'd sections need an anchor id to jump to.
-				inTOC := cls == "user" || isAnswer[asstN]
+				// Classify assistant texts: an "answer" is a final reply (also
+				// shown in the TOC); everything else is intermediate narration,
+				// which the "answer" class distinguishes for the detail levels.
+				answer := false
 				if cls == "assistant" {
+					answer = isAnswer[asstN]
 					asstN++
+				}
+				// A TOC entry is created for every user question and for answers
+				// only; intermediate narration is skipped. Only TOC'd sections
+				// need an anchor id to jump to.
+				inTOC := cls == "user" || answer
+				sectionCls := "turn " + cls
+				if cls == "assistant" {
+					if answer {
+						sectionCls += " answer"
+					} else {
+						sectionCls += " step"
+					}
 				}
 				attrID := ""
 				if inTOC {
@@ -113,7 +133,7 @@ func renderSessionHTML(s session.Session, entries []session.Entry) string {
 					attrID = " id=\"" + id + "\""
 					toc = append(toc, tocEntry{ID: id, Kind: cls, Mark: mark, Label: tocLabel(blk.Text)})
 				}
-				body.WriteString("<section class=\"turn " + cls + "\"" + attrID + "><div class=\"role\">" + role)
+				body.WriteString("<section class=\"" + sectionCls + "\"" + attrID + "><div class=\"role\">" + role)
 				// The assistant role line carries a toggle icon on its right
 				// edge; it opens/closes every collapsible block of the group that
 				// follows this turn. Orphan buttons (no following group) are
@@ -430,9 +450,11 @@ func afterNumber(s string) string {
 
 const htmlStyle = `:root{--bg:#ffffff;--fg:#1f2328;--dim:#6a6a6a;--accent:#0059b3;--user:#0a7d1a;--claude:#8250df;--code-bg:#f2f2f5;--border:#d8dee4}
 @media(prefers-color-scheme:dark){:root{--bg:#0f1115;--fg:#e6e6e6;--dim:#9aa0a6;--accent:#6cb6ff;--user:#7ee787;--claude:#c297ff;--code-bg:#1b1f27;--border:#333a42}}
+:root{--bar:rgba(255,255,255,.82)}
+@media(prefers-color-scheme:dark){:root{--bar:rgba(15,17,21,.82)}}
 *{box-sizing:border-box}
 html{scroll-behavior:smooth}
-body{margin:0;background:var(--bg);color:var(--fg);font:16px/1.6 -apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,Helvetica,Arial,sans-serif}
+body{margin:0;padding-top:38px;background:var(--bg);color:var(--fg);font:16px/1.6 -apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,Helvetica,Arial,sans-serif}
 header,main,footer{max-width:820px;margin:0 auto;padding:0 24px}
 header{padding-top:32px}
 header h1{margin:0;font-size:22px;color:var(--accent)}
@@ -448,7 +470,7 @@ a.toc-item:hover{background:var(--code-bg)}
 a.toc-user .toc-mark{color:var(--user)}
 a.toc-assistant .toc-mark{color:var(--claude)}
 main{padding-top:16px;padding-bottom:64px}
-.turn{scroll-margin-top:12px}
+.turn{scroll-margin-top:48px}
 .turn{padding:12px 0;border-top:1px solid var(--border)}
 .turn .role{position:relative;font-weight:700;font-size:13px;text-transform:uppercase;letter-spacing:.04em;margin-bottom:6px}
 .turn .role.has-toggle{cursor:pointer}
@@ -472,15 +494,19 @@ details.tech pre{background:var(--code-bg);padding:10px 12px;border-radius:6px;o
 .toggle-all:hover{color:var(--accent)}
 ul,ol{margin:.4em 0;padding-left:1.5em}
 footer{color:var(--dim);font-size:12px;padding-bottom:32px;text-align:center}
-#tech-switch{position:fixed;top:12px;right:12px;z-index:20;display:flex;align-items:center;gap:8px;padding:6px 10px;border-radius:999px;border:1px solid var(--border);background:var(--bg);color:var(--dim);font-size:12px;cursor:pointer;box-shadow:0 1px 4px rgba(0,0,0,.14)}
-#tech-switch:hover{color:var(--fg)}
-.tsw-track{position:relative;width:32px;height:18px;border-radius:999px;background:var(--accent);transition:background .15s}
-.tsw-knob{position:absolute;top:2px;left:16px;width:14px;height:14px;border-radius:50%;background:#fff;transition:left .15s;box-shadow:0 1px 2px rgba(0,0,0,.35)}
-body.hide-tech .tsw-track{background:var(--border)}
-body.hide-tech .tsw-knob{left:2px}
-body.hide-tech .tech-group,body.hide-tech details.tech,body.hide-tech .toggle-all{display:none}
-body.hide-tech .turn .role.has-toggle{cursor:default}
-@media print{#tech-switch{display:none}}
+#toolbar{position:fixed;top:0;left:0;right:0;z-index:30;display:flex;align-items:center;justify-content:flex-end;gap:8px;height:38px;padding:0 16px;background:var(--bar);backdrop-filter:blur(8px);-webkit-backdrop-filter:blur(8px);border-bottom:1px solid var(--border)}
+.tb-label{color:var(--dim);font-size:12px;text-transform:uppercase;letter-spacing:.04em}
+.tb-states{display:flex;gap:4px}
+.tb-state{width:24px;height:22px;border:1px solid var(--border);border-radius:5px;background:var(--bg);color:var(--dim);font:12px/1 ui-monospace,Menlo,monospace;cursor:pointer;padding:0}
+.tb-state:hover{color:var(--fg)}
+.tb-state.active{background:var(--accent);border-color:var(--accent);color:#fff}
+/* Three detail levels for the Claude content:
+   0 = questions + answers, 1 = + intermediate narration, 2 = + tool blocks. */
+body.tech-0 .turn.assistant.step{display:none}
+body.tech-0 .tech-group,body.tech-0 details.tech,body.tech-0 .toggle-all,
+body.tech-1 .tech-group,body.tech-1 details.tech,body.tech-1 .toggle-all{display:none}
+body.tech-0 .turn .role.has-toggle,body.tech-1 .turn .role.has-toggle{cursor:default}
+@media print{#toolbar{display:none}}
 `
 
 // htmlScript toggles every collapsible block inside one tech-group at once. It
@@ -515,20 +541,24 @@ document.addEventListener('click',function(ev){
   if(btn)toggleFor(btn);
 });
 (function(){
-  var sw=document.getElementById('tech-switch'),KEY='ic_hide_tech';
-  function apply(hide){
-    document.body.classList.toggle('hide-tech',hide);
-    sw.setAttribute('aria-pressed',String(!hide));
-    try{localStorage.setItem(KEY,hide?'1':'0');}catch(e){}
+  var KEY='ic_tech_state',body=document.body;
+  var btns=Array.prototype.slice.call(document.querySelectorAll('.tb-state'));
+  var state=0;
+  function apply(s){
+    state=(s+3)%3;
+    body.classList.remove('tech-0','tech-1','tech-2');
+    body.classList.add('tech-'+state);
+    btns.forEach(function(b){b.classList.toggle('active',+b.dataset.state===state);});
+    try{localStorage.setItem(KEY,state);}catch(e){}
   }
-  var start=false;try{start=localStorage.getItem(KEY)==='1';}catch(e){}
+  var start=0;try{var v=parseInt(localStorage.getItem(KEY),10);if(v>=0&&v<=2)start=v;}catch(e){}
   apply(start);
-  sw.addEventListener('click',function(){apply(!document.body.classList.contains('hide-tech'));});
+  btns.forEach(function(b){b.addEventListener('click',function(){apply(+b.dataset.state);});});
   document.addEventListener('keydown',function(ev){
     if(ev.key!=='t'||ev.metaKey||ev.ctrlKey||ev.altKey)return;
     var el=ev.target;
     if(el&&(el.tagName==='INPUT'||el.tagName==='TEXTAREA'||el.isContentEditable))return;
-    apply(!document.body.classList.contains('hide-tech'));
+    apply(state+1);
   });
 })();
 </script>
