@@ -1,3 +1,5 @@
+<img src="assets/inspector.svg" width="110" align="left" alt="">
+
 # Inspector Claude
 
 A terminal browser and full-text search over your local **Claude Code** session
@@ -6,6 +8,8 @@ transcripts — the JSONL files under `~/.claude/projects/<encoded-project>/<ses
 A static browser view is built in as well — no web server needed — and for longer
 sessions it often gives a better overview. It has its own table of contents,
 keyboard shortcuts to toggle the detail level, and jumps between sections.
+
+<br clear="left">
 
 Single static Go binary (CGO off), so it cross-compiles trivially and has no
 runtime dependencies. Interactive [Bubble Tea](https://github.com/charmbracelet/bubbletea)
