@@ -1,11 +1,18 @@
-# inspector_claude
+# Inspector Claude
 
 A terminal browser and full-text search over your local **Claude Code** session
 transcripts — the JSONL files under `~/.claude/projects/<encoded-project>/<session-uuid>.jsonl`.
 
+A static browser view is built in as well — no web server needed — and for longer
+sessions it often gives a better overview. It has its own table of contents,
+keyboard shortcuts to toggle the detail level, and jumps between sections.
+
 Single static Go binary (CGO off), so it cross-compiles trivially and has no
 runtime dependencies. Interactive [Bubble Tea](https://github.com/charmbracelet/bubbletea)
 TUI plus a pipe-friendly plain-CLI mode.
+
+This is a generated project at an early alpha stage, but I thought it might be
+useful to others as well. Pull requests are welcome.
 
 ## Install
 
@@ -75,6 +82,27 @@ chat from either:
 | List/Proj/Detail | `ctrl+o` | open this chat in the browser (standalone HTML) |
 | Detail  | `g` / `G`       | top / bottom |
 | Detail  | `esc` / `q`     | back to list |
+
+### Browser view keys
+
+The standalone HTML file (`ctrl+o` in the TUI, or `--open` from the CLI) carries
+its own shortcuts, deliberately close to the TUI's:
+
+| Keys | Action |
+|------|--------|
+| `t`             | cycle the detail level: `0` questions + answers → `1` + intermediate steps → `2` + tool calls and results (wraps) |
+| `n` / `shift+n` | jump to the next / previous question or answer |
+| click a Claude role line | expand/collapse every technical block of that turn at once |
+| click `▸`/`▾`   | the same, via the explicit toggle at the right edge of the role line |
+
+The toolbar at the top mirrors both: **Pos** shows which question/answer you are
+on and keeps updating while you scroll, and the **0 1 2** buttons set the detail
+level by mouse. The chosen level is remembered in the browser's local storage, so
+the next chat you open starts where you left off. A collapsed **Table of
+Contents** sits above the conversation; each entry links to its section.
+
+Keys only fire without cmd/ctrl/alt, and are ignored while you type in a field —
+so the browser's own `⌘F` search keeps working.
 
 ### Two independent searches
 
