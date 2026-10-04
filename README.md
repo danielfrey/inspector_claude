@@ -7,7 +7,15 @@ Single static Go binary (CGO off), so it cross-compiles trivially and has no
 runtime dependencies. Interactive [Bubble Tea](https://github.com/charmbracelet/bubbletea)
 TUI plus a pipe-friendly plain-CLI mode.
 
-## Install / build
+## Install
+
+macOS, via Homebrew:
+
+```sh
+brew install danielfrey/tap/inspector_claude
+```
+
+## Build from source
 
 ```sh
 make build          # -> ./bin/inspector_claude

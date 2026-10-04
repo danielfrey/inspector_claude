@@ -1,0 +1,38 @@
+# Builds the macOS binaries and publishes them as a GitHub Release whenever a
+# version tag is pushed. The Homebrew tap (danielfrey/homebrew-tap) points its
+# formula at the assets produced here.
+name: release
+
+on:
+  push:
+    tags: ["v*"]
+
+permissions:
+  contents: write # gh release create
+
+jobs:
+  release:
+    # macOS runner: the Go linker ad-hoc signs the darwin/arm64 binary, which
+    # Apple Silicon requires in order to execute it at all.
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0 # the Makefile derives VERSION from `git describe --tags`
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+
+      - name: Build darwin/amd64 + darwin/arm64
+        run: make cross PLATFORMS="darwin/amd64 darwin/arm64"
+
+      - name: Checksums
+        run: |
+          cd dist
+          shasum -a 256 inspector_claude-darwin-* | tee SHA256SUMS
+
+      - name: Publish release
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+        run: gh release create "$GITHUB_REF_NAME" dist/* --generate-notes
