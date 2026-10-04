@@ -26,6 +26,7 @@ inspector_claude --list                # list all sessions, newest first
 inspector_claude --search "kamal 2.8"  # sessions matching a query, most hits first
 inspector_claude --show <session-id>   # print one session (id, id-prefix, or path)
 inspector_claude --show <id> --conversation  # conversation only (no tool calls/thinking)
+inspector_claude --resume <session-id>  # continue that chat in claude, in its own cwd
 inspector_claude --root /path/to/dir   # use a non-default transcripts root
 ```
 
@@ -47,6 +48,7 @@ chat from either:
 | List     | `↑`/`↓`, `ctrl+p`/`ctrl+n` | move selection |
 | List     | `pgup`/`pgdn`   | page |
 | List     | `enter`         | open session |
+| List/Proj | `ctrl+r`       | resume the selected session in `claude` (its own cwd) |
 | List     | `esc`           | clear search / quit |
 | Projects | `←`/`→`         | switch pane (projects ↔ sessions) |
 | Projects | `↑`/`↓`         | move within the active pane |
@@ -58,6 +60,7 @@ chat from either:
 | Detail  | `n` / `N`       | next / previous match |
 | Detail  | `t`             | toggle technical lines (tool calls/results/thinking) |
 | Detail  | `f`             | toggle live-follow (auto-reload as the file grows) |
+| Detail  | `ctrl+r` / `R`  | resume this session in `claude` (its own cwd) |
 | Detail  | `r`             | reload now (Cmd-R is captured by the terminal/OS) |
 | List/Proj/Detail | `ctrl+o` | open this chat in the browser (standalone HTML) |
 | Detail  | `g` / `G`       | top / bottom |

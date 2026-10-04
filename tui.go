@@ -209,6 +209,16 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.reloadDetail()
 		}
 		return m, tick() // keep the single poll loop alive
+	case resumedMsg:
+		if msg.err != nil {
+			m.flash = "resume failed: " + msg.err.Error()
+		} else {
+			m.flash = "back from claude ↩"
+			if m.mode == modeDetail && m.fileChanged() {
+				m.reloadDetail() // the chat likely grew while we were in claude
+			}
+		}
+		return m, nil
 	case tea.KeyMsg:
 		m.flash = "" // transient; cleared on the next key, set again by handlers
 		switch m.mode {
@@ -271,6 +281,11 @@ func (m model) updateList(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			m.openSession(m.filtered[m.cursor])
 		}
 		return m, nil
+	case "ctrl+r":
+		if len(m.filtered) > 0 {
+			return m, resumeCmd(m.filtered[m.cursor])
+		}
+		return m, nil
 	}
 	var cmd tea.Cmd
 	m.input, cmd = m.input.Update(msg)
@@ -320,6 +335,11 @@ func (m model) updateProjects(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	case "ctrl+o":
 		if m.curSessions() > 0 {
 			m.openSession(m.groups[m.projCursor].Sessions[m.sessCursor])
+		}
+		return m, nil
+	case "ctrl+r":
+		if m.curSessions() > 0 {
+			return m, resumeCmd(m.groups[m.projCursor].Sessions[m.sessCursor])
 		}
 		return m, nil
 	}
@@ -409,6 +429,8 @@ func (m model) updateDetail(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		}
 	case "ctrl+o":
 		m.openSession(m.cur) // render to HTML and open in the browser
+	case "ctrl+r", "R":
+		return m, resumeCmd(m.cur) // continue this chat in claude, in its own cwd
 	}
 	return m, nil
 }
@@ -776,7 +798,7 @@ func (m model) viewList() string {
 		b.WriteString("\n")
 	}
 	b.WriteString(stDim.Render(strings.Repeat("─", m.w)) + "\n")
-	foot := "↑↓ move · enter open · ^o browser · tab projects · type search · esc clear/quit"
+	foot := "↑↓ move · enter open · ^o browser · ^r resume · tab projects · type search · esc clear/quit"
 	if m.flash != "" {
 		foot = m.flash
 	}
@@ -809,7 +831,7 @@ func (m model) viewProjects() string {
 		b.WriteString(left[i] + " " + sep + " " + right[i] + "\n")
 	}
 	b.WriteString(stDim.Render(strings.Repeat("─", m.w)) + "\n")
-	foot := "tab list · ←/→ pane · ↑↓ move · enter open · ^o browser · esc quit"
+	foot := "tab list · ←/→ pane · ↑↓ move · enter open · ^o browser · ^r resume · esc quit"
 	if m.flash != "" {
 		foot = m.flash
 	}
@@ -923,7 +945,7 @@ func (m model) viewDetail() string {
 	if m.isearch {
 		b.WriteString(m.dinput.View())
 	} else {
-		b.WriteString(stDim.Render("↑↓/jk scroll · ⇧↑↓ Q&A · c toc · / search · n/N match · t tech · f follow · ^o browser · esc back"))
+		b.WriteString(stDim.Render("↑↓/jk scroll · ⇧↑↓ Q&A · c toc · / search · n/N match · t tech · f follow · ^o browser · ^r resume · esc back"))
 	}
 	return b.String()
 }

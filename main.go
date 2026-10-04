@@ -33,6 +33,7 @@ func main() {
 		convFlag   = flag.Bool("conversation", false, "with --show: hide tool calls/results/thinking")
 		htmlFlag   = flag.String("html", "", "render one session (by id or path) as HTML to stdout")
 		openFlag   = flag.String("open", "", "render one session and open it in the browser, then exit")
+		resumeFlag = flag.String("resume", "", "resume one session (by id or path) with claude, in its own directory")
 		versFlag   = flag.Bool("version", false, "print version and exit")
 	)
 	flag.Parse()
@@ -53,6 +54,8 @@ func main() {
 	}
 
 	switch {
+	case *resumeFlag != "":
+		cliResume(sessions, *resumeFlag)
 	case *htmlFlag != "":
 		cliHTML(sessions, *htmlFlag, false)
 	case *openFlag != "":
