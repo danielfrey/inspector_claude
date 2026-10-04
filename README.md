@@ -1,6 +1,6 @@
-<img src="assets/inspector.svg" width="110" align="left" alt="">
-
 # Inspector Claude
+
+<img src="assets/inspector.svg" width="110" align="left" alt="">
 
 A terminal browser and full-text search over your local **Claude Code** session
 transcripts — the JSONL files under `~/.claude/projects/<encoded-project>/<session-uuid>.jsonl`.
