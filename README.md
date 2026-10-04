@@ -12,7 +12,9 @@ TUI plus a pipe-friendly plain-CLI mode.
 macOS, via Homebrew:
 
 ```sh
-brew install danielfrey/tap/inspector_claude
+brew tap danielfrey/tap
+brew trust danielfrey/tap          # Homebrew 7+ requires this for third-party taps
+brew install inspector_claude
 ```
 
 ## Build from source
